@@ -5,6 +5,7 @@ import * as whoami from './commands/whoami.js';
 import * as configCmd from './commands/config.js';
 import * as newCmd from './commands/new.js';
 import * as listCmd from './commands/list.js';
+import * as sendCmd from './commands/send.js';
 
 const program = new Command();
 
@@ -15,20 +16,12 @@ configCmd.register(program);
 whoami.register(program);
 newCmd.register(program);
 listCmd.register(program);
+sendCmd.register(program);
 
 const notYet = (name: string) => () => {
   console.error(`'invoice ${name}' is not yet implemented.`);
   process.exit(1);
 };
-
-program
-  .command('send <id>')
-  .description('Render and email an invoice (confirms recipients first; --yes to skip)')
-  .option('--to <email...>', 'override recipients (replaces config)')
-  .option('--cc <email...>', 'override cc recipients')
-  .option('--bcc <email...>', 'override bcc recipients')
-  .option('-y, --yes', 'skip the confirmation prompt')
-  .action(notYet('send'));
 
 program
   .command('sync')
