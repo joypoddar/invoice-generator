@@ -47,7 +47,17 @@ invoice-generator/
 
 ## Phase status
 
-The plan lays out 9 phases. The repo currently has only docs — no code. **Active phase: Phase 1 (CLI MVP)** — see `PLAN.md` § "Execution phases" for the precise scope.
+The plan lays out 9 phases. **Phase 1 (CLI MVP) is complete** — the `invoice` binary builds, ships, and exercises the full Phase-1 command surface (`init / config / whoami / new / list / send / sync / mark`). **50 unit tests** pass across `shared/invoice`, `shared/config-schema`, `core/sqlite-store`, `core/ingest`, and `cli/email`. The manual end-to-end verification against a real mail account (PLAN.md § "Verification" steps 1–11) is the one remaining item before Phase 2 starts in earnest.
+
+**Active phase: Phase 2 (CLI productivity)** — `invoice list` filter flags, `invoice mark` (done early in Phase 1), `invoice export csv`, `invoice preview`, `invoice sync --backfill / --since`, full `core/csv.ts` and richer `core/queries.ts`. See PLAN.md § "Execution phases" → Phase 2 for the precise scope.
+
+Notable Phase-1 deviations from the plan (already in code; flag if you change them):
+
+- **`node:sqlite` instead of `better-sqlite3`** — the Linux box this runs on has no C compiler and Node 24 has no published better-sqlite3 prebuilds. `node:sqlite` is built into Node 22+. Tests already cover the seam.
+- **`mail.*` instead of `email.*`** for the email-send config namespace — the plan implicitly conflated the top-level `email` (user's address, a string) with `email.recipients` (an object). They are now distinct: `email` is the string identity, `mail.recipients.{to,cc,bcc}` is the recipe.
+- **`message_uid` nullable** in the SQLite schema (plan had it `UNIQUE NOT NULL`). Drafts created via `invoice new` exist before any IMAP UID is assigned; `NOT NULL` would block that. Still `UNIQUE` to dedupe across syncs, and the upsert `COALESCE`s the column so once set it's preserved.
+- **`local.db` is created at default umask `0644`**, not `0600`. The parent dir is `0700` so this isn't reachable by other local users, but Phase 3 polish should chmod the DB file after creation.
+- **Shebang trick for the SQLite experimental warning** — `#!/usr/bin/env -S node --no-warnings=ExperimentalWarning`. Works when the bin is invoked via the shebang (e.g. after `pnpm link`); explicit `node dist/index.js` invocations will still show the warning since they bypass the shebang.
 
 When you complete a phase, update this section so the next session knows where things stand.
 
