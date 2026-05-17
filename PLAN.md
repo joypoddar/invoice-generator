@@ -496,17 +496,26 @@ Phases are re-ordered to reflect the v2 architecture. The "PDF design" phase fro
 
 **Test**: Verification steps 19–22.
 
-### Phase 4 — HTML invoice rendering polish
+### Phase 4 — Customer-facing invoice + recurring billing
 
-**Goal**: the HTML invoice (used both as email body and dashboard print view) looks professional.
+**Goal**: ship the production-quality HTML invoice (matching Creowis's existing design), customizable subject lines, and the full recurring-billing surface (clone / templates / scheduled).
 
 **Build**:
 
-- Real branding: logo, color, typography from `branding.*` config.
-- Line-item table, tax line, totals, payment instructions block.
-- Proven across line-item lengths (0, few, many → page break in `window.print()`).
+- **Rendering polish**: branding from `config.branding.*` (color, font; logo deferred to Phase 5), date formatting from `config.invoice.dateFormat`, currency formatting (Indian comma-grouping for INR), tax line, payment-instructions block. Print-friendly via `@media print`. Verified across line-item counts.
+- **Schema promotion**: company info, phone, customer address, bank details, tax fields, payment instructions move from the ad-hoc `invoice.custom` convention into formal `DEFAULT_FIELDS`. Each invoice is a complete snapshot of its data at creation time.
+- **Subject line**: wire `mail.subjectTemplate` (already in config schema). Variables: `{invoiceNumber}/{customerName}/{total}/{currency}/{issueDate}/{dueDate}`. `--subject "..."` per-send override.
+- **Recurring billing** — three layers:
+  - `invoice clone <id>` (single shot — new draft from existing invoice).
+  - `invoice template save / list / use / delete` (named patterns).
+  - `invoice recurring create / list / show / delete / generate` (data model + manual generation; creates drafts only — sending still requires explicit `invoice send`).
+- **Scheduling**: `invoice recurring schedule-help` prints platform-appropriate cron / launchd / Task Scheduler instructions. We do not run a daemon ourselves; users wire `invoice recurring generate` into their OS scheduler if they want auto-generation.
 
-**Note**: this replaces the v1 plan's "final PDF design" phase. The HTML invoice is the customer-facing rendering. React Email is the documented upgrade path if the HTML body needs cross-client polish for external customers.
+**Note**: this is the v1 plan's "final PDF design" phase, broadened to also cover productivity around the recurring use case ("same invoice monthly to the same customer"). The HTML invoice is the customer-facing rendering.
+
+### Phase 4.5 (deferred) — React Email migration
+
+**Goal**: replace `cli/src/email.ts`'s plain HTML template with a single React Email component. Same `renderInvoiceHtml()` signature, different internals. Triggered when invoices start going to external customers and need cross-client polish (Outlook quirks, dark-mode, etc.). The dashboard's print view (Phase 5) shares the component.
 
 ### Phase 5 — Hono dashboard MVP
 
@@ -770,6 +779,170 @@ This is the concrete implementation plan for Phase 1. Each step is a discrete, v
 - `invoice repo *` — Phase 7.
 - Real HTML invoice design (logo, colors, etc.) — Phase 4. Phase 1's HTML body is a plain functional template.
 - PDF generation — explicitly never.
+
+## Phase 4 — Step-by-Step Build Order
+
+Three concerns blended into one phase: customer-facing rendering polish, subject-line customization, and the full recurring-billing surface (clone + templates + scheduled). Steps are ordered so each lands a working sub-feature; stop and run the checkpoint before moving on.
+
+**Decisions confirmed for Phase 4** (do not re-litigate):
+
+- **Rendering target**: the Creowis-style invoice in `/home/ananya/Downloads/invoice.jpg` — blue title, meta block, two Billed By/Billed To rounded boxes, blue-header earnings table, side-by-side Bank Details + Total block with accounting underline, optional notes/extras.
+- **Schema**: bank details, phone, customer address, company info, tax fields, and payment instructions are promoted from the `invoice.custom` convention into formal `DEFAULT_FIELDS`. Snapshot at `invoice new` time; documents are immutable.
+- **Logo**: deferred to Phase 5 (no embedding, no URL handling, no `<img>` tag in the template).
+- **`invoice new` prompts**: silent defaults from config for the new fields — no extra prompts in the wizard. Power users edit via `invoice config set` or by hand-editing config.
+- **Recurring**: ship all three layers (clone, templates, schedules) plus a `schedule-help` command. **Generated invoices are always drafts** — sending stays explicit (`invoice send <id>`).
+- **React Email**: explicitly NOT in Phase 4 — deferred to Phase 4.5.
+
+### Step 1 — Schema additions + capture in `invoice new`
+
+**Files**:
+
+- `packages/shared/src/invoice.ts` — extend `DEFAULT_FIELDS` with: `companyName, companyAddress, companyPhone, companyWebsite, companyTaxId, customerAddress, bankAccountName, bankAccountNumber, bankIfsc, bankAccountType, bankName, taxRate, taxLabel, taxAmount, paymentInstructions`. No type-level change to `Invoice` (it's still `Record<string, unknown>` in `default`) — these are documentation/conventional keys.
+- `packages/cli/src/commands/new.ts` — after collecting the existing fields, pull defaults from `config.company.*`, `config.invoice.{defaultTaxRate,taxLabel,defaultNotes,paymentInstructions}` and bake them into `invoice.default`. Compute `taxAmount = subtotal * taxRate` if `taxRate` is set. No new prompts.
+- Tests: extend `invoice.test.ts` to cover the new fields' inclusion in `DEFAULT_FIELDS`.
+
+**Checkpoint**: `invoice new` produces an invoice whose JSON sidecar has all the new fields populated (or omitted with sensible defaults), without any change to the prompt flow.
+
+### Step 2 — Renderer rewrite to match the target design
+
+**Files**:
+
+- `packages/cli/src/email.ts` — refactor `renderInvoiceHtml`:
+  - Accept `(invoice, opts: { branding, dateFormat, currencyFormat })` second arg (passed by `sendInvoice` from config).
+  - Replace hardcoded `#3949ab` with `opts.branding.primaryColor` (fallback default).
+  - Replace hardcoded font with `opts.branding.fontFamily` (fallback to current sans-serif stack).
+  - Read company/bank/customer fields from `invoice.default` instead of `invoice.custom`. **Keep custom-fields fallback for one release** so existing in-flight invoices still render.
+  - Move the total out of the table footer into a standalone block to the right of bank details, matching the image (label "Total ({currency})", accounting double-underline).
+  - Render a tax line in the total block when `invoice.default.taxRate` is set.
+  - Render a "Payment instructions" block below bank details when `invoice.default.paymentInstructions` is set.
+- `packages/cli/src/format.ts` (new) — `formatDate(iso, format)` and `formatCurrency(amount, currency, format)`. Use `Intl.DateTimeFormat` for dates; `Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' })` for INR; locale-derived for other currencies.
+- Tests:
+  - `format.test.ts` (new) — date formats (`YYYY-MM-DD`, `DD/MM/YYYY`, `MM-DD-YYYY`), INR comma-grouping (`12,34,567.89`), USD grouping (`12,345.67`).
+  - `email.test.ts` (extend) — renderer reads from `default.companyName` etc.; legacy `custom.fromPhone` still works; branding overrides apply.
+
+**Checkpoint**: render a sample invoice; visually compare to the target image side-by-side. INR formatting matches `₹12,34,567.89` style.
+
+### Step 3 — `@media print` polish
+
+**Files**:
+
+- `packages/cli/src/email.ts` — add a `<style>` block (inline-style emails still need it for `window.print()`):
+  - `@page { size: A4; margin: 1cm; }`
+  - `@media print { body { background: white; } .no-print { display: none; } table { page-break-inside: avoid; } tr { page-break-inside: avoid; } }`
+- Sample test: an invoice with 30 line items renders to multiple pages cleanly when printed from a browser.
+
+**Checkpoint**: open the rendered HTML in a browser, hit Cmd/Ctrl+P, and verify the preview is clean (no awkward breaks mid-row, no email-only header chrome on paper).
+
+### Step 4 — Subject line customization
+
+**Files**:
+
+- `packages/shared/src/email-format.ts` — add `renderSubject(template, invoice)` that substitutes `{invoiceNumber}/{customerName}/{total}/{currency}/{issueDate}/{dueDate}`.
+- `packages/cli/src/email.ts` — `buildMailOptions` reads `config.mail.subjectTemplate ?? subjectFor(invoice)`. (Pass `subjectTemplate` through as the third arg, or read from config at the CLI layer and pass as a string.)
+- `packages/cli/src/commands/send.ts` — add `--subject "<text>"` option; passes through to `sendInvoice`.
+- Tests: `email-format.test.ts` covering template substitution + missing-field behavior.
+
+**Checkpoint**: `invoice send <id> --subject "Custom prefix - {invoiceNumber}"` substitutes correctly; default behavior unchanged when no template + no flag.
+
+### Step 5 — `invoice clone <id>`
+
+**Files**:
+
+- `packages/cli/src/commands/clone.ts` (new):
+  - Look up invoice by id; bail if not found.
+  - Deep-copy. Reset `id = uuid()`, `status = 'draft'`, `sentAt = undefined`, `recipients = undefined`, `paymentStatus = 'unpaid'`, `paidAt = undefined`.
+  - Update `issueDate = today`, `dueDate = today + defaultDueDays`.
+  - Compute new `invoiceNumber` via `renderInvoiceNumber(config.invoice.numberFormat, config.invoice.nextSeq, today)`. Bump `nextSeq` and save config.
+  - `store.upsert(newInvoice)`.
+  - Print summary; remind user they can edit before sending.
+- `packages/cli/src/index.ts` — register.
+
+**Checkpoint**: `invoice clone <old-id>` creates a draft with fresh dates and number, identical customer/line-items/bank-details/tax. `invoice list` shows both originals.
+
+### Step 6 — Templates (save / list / use / delete)
+
+**Files**:
+
+- `packages/cli/src/templates.ts` (new) — path helper `templatesDir() = ~/.invoice/templates/`, JSON read/write helpers, list helper.
+- `packages/cli/src/commands/template.ts` (new):
+  - `invoice template save <id> <name>` — reads invoice, strips id/status/sentAt/recipients/paidAt/issueDate/dueDate, writes `~/.invoice/templates/<name>.json` (mode `0600`).
+  - `invoice template list` — table of templates.
+  - `invoice template use <name>` — generates a new invoice from a template (same logic as clone, but from a template file). Prints the resulting id.
+  - `invoice template delete <name>` — confirms then unlinks.
+- Tests: `template.test.ts` — round-trip save → list → use produces a valid Invoice; delete removes.
+
+**Checkpoint**: `invoice template save <id> monthly-acme && invoice template use monthly-acme` produces a fresh draft for Acme.
+
+### Step 7 — Recurring schedules (data model + commands)
+
+**Files**:
+
+- `packages/core/src/sqlite-store.ts` — schema add:
+  ```sql
+  CREATE TABLE IF NOT EXISTS recurring_invoices (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    source_kind TEXT NOT NULL CHECK (source_kind IN ('invoice','template')),
+    source_ref TEXT NOT NULL,         -- invoice.id OR template name
+    frequency TEXT NOT NULL CHECK (frequency IN ('daily','weekly','monthly','yearly')),
+    start_date TEXT NOT NULL,
+    end_date TEXT,
+    next_run TEXT NOT NULL,
+    last_run TEXT,
+    created_at TEXT NOT NULL
+  );
+  ```
+  Plus methods: `createRecurring`, `listRecurrings`, `getRecurring`, `deleteRecurring`, `updateRecurringRun(id, nextRun, lastRun)`, `findDueRecurrings(asOf)`.
+- `packages/core/src/recurring.ts` (new) — pure function `computeNextRun(date, frequency): string`; `generateInvoiceFor(recurring, source): Invoice` — handles both `kind: 'invoice'` (look up + clone) and `kind: 'template'` (read file + materialize).
+- `packages/cli/src/commands/recurring.ts` (new):
+  - `invoice recurring create` — interactive: pick source (existing invoice id or template name), set frequency, start date, optional end date, optional name. Validates and inserts.
+  - `invoice recurring list` — table: name, source, frequency, next_run, last_run.
+  - `invoice recurring show <name>` — full detail.
+  - `invoice recurring delete <name>` — confirms then deletes.
+  - `invoice recurring generate [--dry-run]` — finds all due (next_run <= today), generates a draft for each, updates next_run + last_run. Prints what was created. `--dry-run` prints the plan without writing.
+- Tests:
+  - `recurring.test.ts` — `computeNextRun` for each frequency, leap-year/month-end edge cases.
+  - `sqlite-store.test.ts` — extend to cover the new recurring table CRUD.
+
+**Checkpoint**: create a monthly recurring with start_date in the past → `invoice recurring generate` produces drafts for each missed period and advances next_run. Re-run → produces 0. Drafts are visible in `invoice list`.
+
+### Step 8 — Scheduling helper (`invoice recurring schedule-help`)
+
+**Files**:
+
+- `packages/cli/src/commands/recurring.ts` — add `schedule-help` subcommand that detects the OS and prints:
+  - **Linux/macOS**: a recommended crontab entry (`5 9 * * * /full/path/to/invoice recurring generate >> ~/.invoice/recurring.log 2>&1`) plus `crontab -e` instructions; on macOS, also mention `launchd` as the modern alternative with a sample plist.
+  - **Windows**: a `schtasks` command or PowerShell snippet for Task Scheduler.
+  - Always reminds the user that generation creates drafts; sending stays explicit.
+
+**Checkpoint**: `invoice recurring schedule-help` on Linux prints a copy-pasteable cron line; on macOS prints both cron and launchd; on Windows prints schtasks. Manual run of `invoice recurring generate` always works regardless.
+
+### Step 9 — Verification + housekeeping
+
+**Run**:
+
+- `pnpm build && pnpm test && pnpm lint` — all green; expect ~80-90 tests total.
+- Walk a new "Phase 4" section in `TESTING.md`: rendering matches target, dates and currencies format correctly, print preview is clean, subject line works with and without template, clone preserves customer + items, templates round-trip, recurring generates exactly as scheduled.
+
+**Update**:
+
+- `TESTING.md` — new sections for rendering, subject lines, clone, templates, recurring.
+- `CLAUDE.md` — flip "Phase status" to "Phase 4 complete, Phase 2 still open / Phase 5 next" with deviations recorded (the `custom` → `default` migration, the `mail.subjectTemplate` repurposing from Phase 5 to Phase 4, etc.).
+
+### Deviations to expect (flag in CLAUDE.md when they land)
+
+- **Custom-field → DEFAULT_FIELDS migration**: pre-existing invoices with bank/phone/address in `custom` continue to render correctly because the renderer falls back to `custom.*` when `default.*` is empty. Phase 5 polish can drop the fallback after enough time has passed.
+- **Logo deferred to Phase 5**: the renderer has no `<img>` slot in Phase 4. Plan-1 v2 had logos in Phase 4; we explicitly deferred.
+- **`mail.subjectTemplate` promoted from Phase 5 to Phase 4**: small, low-risk; lives next to the other email rendering work.
+- **Recurring generates drafts only**: never auto-sends. `invoice recurring generate` + `invoice send <id>` is the loop; auto-sending is a deliberate non-goal (someone might want to review or tweak a recurring invoice before it goes out).
+- **`schedule-help` doesn't install** — it prints. Users decide whether to wire up cron themselves. Keeps the "no daemons in our code" property exact.
+
+### What is NOT in Phase 4 (don't accidentally build)
+
+- React Email migration — Phase 4.5.
+- Logo embedding — Phase 5.
+- Dashboard pages — Phase 5.
+- Auto-sending recurring invoices — explicit non-goal.
 
 ## Out of scope (explicit non-goals)
 
