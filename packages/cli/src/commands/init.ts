@@ -27,7 +27,7 @@ async function runInit(): Promise<void> {
   const email = await input({ message: 'Your email:', default: existing?.email, required: true });
   const currency = await input({
     message: 'Default currency (3-letter ISO code):',
-    default: existing?.currency ?? 'USD',
+    default: existing?.currency ?? 'INR',
   });
   const numberFormat = await input({
     message: 'Invoice number format (use {SEQ}/{YYYY}/{MM}/{DD}):',
@@ -93,7 +93,9 @@ async function runInit(): Promise<void> {
   let folder: string;
   try {
     const folders = await listFolders(client);
-    const ranked = [...folders].sort((a, b) => specialRank(a.specialUse) - specialRank(b.specialUse));
+    const ranked = [...folders].sort(
+      (a, b) => specialRank(a.specialUse) - specialRank(b.specialUse),
+    );
     folder = await select({
       message: 'Which mailbox folder should this install sync from?',
       choices: ranked.map((f) => ({
@@ -116,7 +118,10 @@ async function runInit(): Promise<void> {
     message: "Default 'to' (comma-separated email addresses):",
     default: existing?.mail.recipients.to.join(', ') ?? 'hello@creowis.com',
   });
-  const toList = toCsv.split(',').map((s) => s.trim()).filter(Boolean);
+  const toList = toCsv
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
 
   const merged = mergeConfig(existing, {
     name,
