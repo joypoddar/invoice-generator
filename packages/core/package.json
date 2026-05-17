@@ -17,9 +17,12 @@
     "typecheck": "tsc --build"
   },
   "dependencies": {
-    "@invoice/shared": "workspace:*"
+    "@invoice/shared": "workspace:*",
+    "imapflow": "^1.0.180",
+    "mailparser": "^3.7.0"
   },
   "devDependencies": {
+    "@types/mailparser": "^3.4.5",
     "@types/node": "^22.0.0"
   }
 }
