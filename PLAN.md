@@ -42,20 +42,20 @@ The system is deliberately minimal: no hosted server, no OAuth, no SaaS, no daem
 
 ## Why this satisfies every constraint
 
-| Concern | How it's addressed |
-|---|---|
-| No hosting bill | Everything runs on the user's laptop. Mail provider is whatever the team already pays for. |
-| No ops | Nothing to keep alive. Manual sync only — no daemons, no timers. |
-| Minimal backend code | One Hono server, a handful of routes, server-rendered JSX. No bundler, no build step. |
-| Self-contained | Once synced, the dashboard works fully offline. |
-| Real query/filter/sort | SQLite + `better-sqlite3` + the `core/queries.ts` module. |
+| Concern                     | How it's addressed                                                                               |
+| --------------------------- | ------------------------------------------------------------------------------------------------ |
+| No hosting bill             | Everything runs on the user's laptop. Mail provider is whatever the team already pays for.       |
+| No ops                      | Nothing to keep alive. Manual sync only — no daemons, no timers.                                 |
+| Minimal backend code        | One Hono server, a handful of routes, server-rendered JSX. No bundler, no build step.            |
+| Self-contained              | Once synced, the dashboard works fully offline.                                                  |
+| Real query/filter/sort      | SQLite + `better-sqlite3` + the `core/queries.ts` module.                                        |
 | Recent + backfill ingestion | `invoice sync` (incremental, watermarked by IMAP UID) and `--backfill` / `--since` (historical). |
-| Paid/unpaid + overdue | `payment_status` column + a query-time overdue predicate. Toggleable from CLI or dashboard. |
-| Aggregates | SQL `GROUP BY` queries powering `/analytics`. |
-| CSV export | Streamed from SQLite via `core/csv.ts`; same code from CLI and dashboard. |
-| Users see only their own | Their `imap.folder` is set to their own Sent folder; that's the only thing their CLI ever reads. |
-| Team-wide view | The inbox manager's `imap.folder = INBOX` against the shared mailbox. |
-| Highlight extra fields | `Invoice.custom` map; row badge when non-empty. |
+| Paid/unpaid + overdue       | `payment_status` column + a query-time overdue predicate. Toggleable from CLI or dashboard.      |
+| Aggregates                  | SQL `GROUP BY` queries powering `/analytics`.                                                    |
+| CSV export                  | Streamed from SQLite via `core/csv.ts`; same code from CLI and dashboard.                        |
+| Users see only their own    | Their `imap.folder` is set to their own Sent folder; that's the only thing their CLI ever reads. |
+| Team-wide view              | The inbox manager's `imap.folder = INBOX` against the shared mailbox.                            |
+| Highlight extra fields      | `Invoice.custom` map; row badge when non-empty.                                                  |
 
 ## Tech stack
 
@@ -136,6 +136,7 @@ invoice-generator/
 ```
 
 Key invariants:
+
 - **One bin**: `packages/cli/` produces a single `invoice` command. No `admin` subcommand namespace anywhere.
 - **One InvoiceStore**: `SqliteStore` is the only impl in v1. The interface exists so a future `PostgresStore` can be dropped in without touching anything else.
 - **One sync function**: `core/ingest.ts` is called identically by `invoice sync` (CLI) and `POST /sync` (Hono). Behavior cannot drift.
@@ -146,20 +147,22 @@ Key invariants:
 ```ts
 // packages/shared/src/invoice.ts
 export const DEFAULT_FIELDS = [
-  'invoiceNumber',  // user-defined display format from invoice.numberFormat config
+  'invoiceNumber', // user-defined display format from invoice.numberFormat config
   'issueDate',
   'dueDate',
-  'fromName', 'fromEmail',   // sender — typed at init, embedded in every invoice
-  'customerName', 'customerEmail',
-  'lineItems',               // [{ description, quantity, unitPrice }]
-  'currency',                // ISO 4217
+  'fromName',
+  'fromEmail', // sender — typed at init, embedded in every invoice
+  'customerName',
+  'customerEmail',
+  'lineItems', // [{ description, quantity, unitPrice }]
+  'currency', // ISO 4217
   'notes',
 ] as const;
 
 export interface Invoice {
-  id: string;                          // UUID — system-generated. The real key everywhere.
-  default: Record<string, unknown>;    // values for DEFAULT_FIELDS
-  custom: Record<string, unknown>;     // anything else
+  id: string; // UUID — system-generated. The real key everywhere.
+  default: Record<string, unknown>; // values for DEFAULT_FIELDS
+  custom: Record<string, unknown>; // anything else
   status: 'draft' | 'sent';
   sentAt?: string;
   recipients?: { to: string[]; cc?: string[]; bcc?: string[] };
@@ -181,28 +184,28 @@ The single `invoice` binary. No role gating, no subcommand namespaces beyond `co
 
 ### Top-level
 
-| Command | Behavior |
-|---|---|
-| `invoice init` | Interactive setup. Prompts for `name`, `email`, currency, invoice number format, SMTP host/port/user/app-password, IMAP host/port/user/app-password. **Lists IMAP folders via `imapflow.list()` and asks the user to pick** (regular team members pick their Sent folder; the inbox manager picks INBOX of the shared mailbox). Creates `~/.invoice/local.db`. Re-running is idempotent. |
-| `invoice config get/set/unset/edit/validate/doctor` | All config operations. `doctor` walks every required key + checks keychain entries. |
-| `invoice whoami` | Prints `name`, `email`, configured `imap.folder`, and which mail account the IMAP creds belong to. |
-| `invoice new` | Interactive walkthrough of default fields, then `Add additional fields? (y/N)` loop. Saves draft via `SqliteStore.upsert`. |
-| `invoice list [--filter ...]` | Filter flags: `--paid / --unpaid / --overdue / --has-custom / --customer / --since / --due-before / --due-after / --sort <field>`. Same `core/queries.ts` powers it. |
-| `invoice preview <id>` | Pretty-prints the JSON to stdout AND opens the dashboard's invoice detail page (`http://127.0.0.1:3000/invoices/<id>`) in the default browser. If the dashboard isn't running, prints a hint. |
-| `invoice send <id> [flags]` | **Interactive recipient confirmation by default.** Renders to/cc/bcc from `email.recipients` recipe + the per-invoice line items, shows the user a summary, asks "Send? [y/N]". Flags: `--to <email>`, `--cc <email>`, `--bcc <email>` (override recipients for this send only); `--yes` (skip the confirmation prompt). Email contains an HTML body and a single attachment: `invoice-<number>.json`. **No PDF.** |
-| `invoice sync [--backfill] [--since <date>]` | Pulls new messages from `imap.folder` matching `X-Invoice-Generator:1`, parses sidecars, upserts into the DB. Manual only — no timers, no daemons. |
-| `invoice mark <id> paid \| unpaid` | Updates `payment_status` and `paid_at`. |
-| `invoice export csv [--filter ...] [--out file.csv]` | Streams CSV (stdout by default). Same filter grammar as `invoice list`. |
-| `invoice dashboard [--port 3000]` | Spawns the Hono server bound to `127.0.0.1`, opens the browser. Server runs in foreground; Ctrl+C stops it. |
+| Command                                              | Behavior                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `invoice init`                                       | Interactive setup. Prompts for `name`, `email`, currency, invoice number format, SMTP host/port/user/app-password, IMAP host/port/user/app-password. **Lists IMAP folders via `imapflow.list()` and asks the user to pick** (regular team members pick their Sent folder; the inbox manager picks INBOX of the shared mailbox). Creates `~/.invoice/local.db`. Re-running is idempotent.                           |
+| `invoice config get/set/unset/edit/validate/doctor`  | All config operations. `doctor` walks every required key + checks keychain entries.                                                                                                                                                                                                                                                                                                                                |
+| `invoice whoami`                                     | Prints `name`, `email`, configured `imap.folder`, and which mail account the IMAP creds belong to.                                                                                                                                                                                                                                                                                                                 |
+| `invoice new`                                        | Interactive walkthrough of default fields, then `Add additional fields? (y/N)` loop. Saves draft via `SqliteStore.upsert`.                                                                                                                                                                                                                                                                                         |
+| `invoice list [--filter ...]`                        | Filter flags: `--paid / --unpaid / --overdue / --has-custom / --customer / --since / --due-before / --due-after / --sort <field>`. Same `core/queries.ts` powers it.                                                                                                                                                                                                                                               |
+| `invoice preview <id>`                               | Pretty-prints the JSON to stdout AND opens the dashboard's invoice detail page (`http://127.0.0.1:3000/invoices/<id>`) in the default browser. If the dashboard isn't running, prints a hint.                                                                                                                                                                                                                      |
+| `invoice send <id> [flags]`                          | **Interactive recipient confirmation by default.** Renders to/cc/bcc from `email.recipients` recipe + the per-invoice line items, shows the user a summary, asks "Send? [y/N]". Flags: `--to <email>`, `--cc <email>`, `--bcc <email>` (override recipients for this send only); `--yes` (skip the confirmation prompt). Email contains an HTML body and a single attachment: `invoice-<number>.json`. **No PDF.** |
+| `invoice sync [--backfill] [--since <date>]`         | Pulls new messages from `imap.folder` matching `X-Invoice-Generator:1`, parses sidecars, upserts into the DB. Manual only — no timers, no daemons.                                                                                                                                                                                                                                                                 |
+| `invoice mark <id> paid \| unpaid`                   | Updates `payment_status` and `paid_at`.                                                                                                                                                                                                                                                                                                                                                                            |
+| `invoice export csv [--filter ...] [--out file.csv]` | Streams CSV (stdout by default). Same filter grammar as `invoice list`.                                                                                                                                                                                                                                                                                                                                            |
+| `invoice dashboard [--port 3000]`                    | Spawns the Hono server bound to `127.0.0.1`, opens the browser. Server runs in foreground; Ctrl+C stops it.                                                                                                                                                                                                                                                                                                        |
 
 ### Phase 7 (opt-in): git-backed storage of `~/.invoice/data/`
 
 `~/.invoice/data/` (a separate folder containing JSON snapshots of every invoice) can become a git repo. The mail provider remains the canonical source — git is a secondary mirror for users who want extra durability or audit trail. We never touch the GitHub API; `git push` uses whatever credentials the user's git already has.
 
-| Command | Behavior |
-|---|---|
-| `invoice repo init [--remote <url>]` | `git init` in `~/.invoice/data/`, initial commit. Asks `Auto-commit on every change? (y/N)` and `Auto-push after each commit? (y/N)`; answers go to `git.autoCommit` / `git.autoPush`. |
-| `invoice repo status / commit [-m <msg>] / push / log` | Manual operations. |
+| Command                                                | Behavior                                                                                                                                                                               |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `invoice repo init [--remote <url>]`                   | `git init` in `~/.invoice/data/`, initial commit. Asks `Auto-commit on every change? (y/N)` and `Auto-push after each commit? (y/N)`; answers go to `git.autoCommit` / `git.autoPush`. |
+| `invoice repo status / commit [-m <msg>] / push / log` | Manual operations.                                                                                                                                                                     |
 
 When `git.autoCommit = true`, every state-changing command (`new`, `mark`, `sync`) ends with a commit. Push behavior is controlled separately so users get rich local history without forcing a network round-trip on every action. Push failures never block the action that triggered them.
 
@@ -218,9 +221,9 @@ When `git.autoCommit = true`, every state-changing command (`new`, `mark`, `sync
 
 **Passwords are NOT in `~/.invoice/`** — they live in the OS keychain via `@napi-rs/keyring` under service `invoice-cli`:
 
-| Account | Stored | Used by |
-|---|---|---|
-| `smtp-app-password` | SMTP app password | `invoice send` |
+| Account             | Stored            | Used by                           |
+| ------------------- | ----------------- | --------------------------------- |
+| `smtp-app-password` | SMTP app password | `invoice send`                    |
 | `imap-app-password` | IMAP app password | `invoice sync`, dashboard `/sync` |
 
 `config.json` contains no secrets.
@@ -240,7 +243,8 @@ export interface InvoiceStore {
 
 export interface InvoiceFilter {
   text?: string;
-  dueBefore?: string; dueAfter?: string;
+  dueBefore?: string;
+  dueAfter?: string;
   paymentStatus?: 'paid' | 'unpaid';
   overdue?: boolean;
   hasCustomFields?: boolean;
@@ -251,48 +255,48 @@ export interface InvoiceFilter {
 
 All filtering, aggregation, CSV export, and dashboard pages take an `InvoiceStore` and a typed filter/aggregate spec. **No SQL or filesystem APIs anywhere outside `core/sqlite-store.ts`.**
 
-This is the explicit migration boundary. Today's only impl is `SqliteStore`. A future migration to a hosted DB (Fly.io + Postgres, Supabase, etc.) is a *new file added* (`postgres-store.ts`), not a codebase rewrite. The other half of the migration is config-driven: `storage.backend = 'postgres'` and `storage.connectionUrl = '...'` switches the runtime store. No code path changes.
+This is the explicit migration boundary. Today's only impl is `SqliteStore`. A future migration to a hosted DB (Fly.io + Postgres, Supabase, etc.) is a _new file added_ (`postgres-store.ts`), not a codebase rewrite. The other half of the migration is config-driven: `storage.backend = 'postgres'` and `storage.connectionUrl = '...'` switches the runtime store. No code path changes.
 
 ## Configuration
 
 A single `~/.invoice/config.json`. Validated by a Zod schema in `packages/shared/src/config-schema.ts` — single source of truth for runtime validation and TypeScript types. **Override order, highest wins**: CLI flag → env var (`INVOICE_*`) → `config.json` → built-in default. **Secrets never go here.**
 
-| Key | Purpose | Phase |
-|---|---|---|
-| **Identity** |
-| `name`, `email` | Sender identity | 1 |
-| `company.name`, `company.address`, `company.phone`, `company.website`, `company.taxId` | Printed on the HTML invoice + From header | 4 (HTML invoice design) |
-| `branding.primaryColor`, `branding.fontFamily`, `branding.logoUrl` | Visual design of the HTML invoice | 4 |
-| **Invoice defaults** |
-| `currency` | Default currency code | 1 |
-| `invoice.numberFormat` (string with `{SEQ}/{YYYY}/{MM}/{DD}`), `invoice.nextSeq` (integer) | Display-format generation | 1 |
-| `invoice.defaultDueDays` | `dueDate = issueDate + N` | 1 |
-| `invoice.defaultTaxRate`, `invoice.taxLabel` | Tax line | 4 |
-| `invoice.defaultNotes`, `invoice.paymentInstructions`, `invoice.dateFormat`, `invoice.currencyFormat` | HTML invoice content + formatting | 4 |
-| **Email recipients (recipe)** |
-| `email.recipients.to: string[]` | Default `to` list (e.g. `["hello@creowis.com"]`) | 1 |
-| `email.recipients.cc: string[]`, `email.recipients.bcc: string[]` | Default cc/bcc | 1 |
-| `email.subjectTemplate`, `email.bodyTemplate` | Customizable subject/body | 5 |
-| `email.replyTo` | Reply-to header | 5 |
-| **SMTP** |
-| `smtp.host`, `smtp.port`, `smtp.user` | Connection (password in keychain) | 1 |
-| **IMAP / sync** |
-| `imap.host`, `imap.port`, `imap.user` | Connection (password in keychain) | 1 |
-| `imap.folder` | **Folder to sync from. The only thing that scopes what you see.** | 1 |
-| `sync.maxBackfillMonths` | Cap on `--backfill` | 2 |
-| **Storage / migration** |
-| `storage.backend` (`sqlite` in v1) | Active store implementation | 1 |
-| `storage.dbPath` | Override `~/.invoice/local.db` | 3 |
-| **Dashboard** |
-| `dashboard.port`, `dashboard.host` | Bind address (default `127.0.0.1:3000`) | 5 |
-| `dashboard.theme`, `dashboard.defaultSort`, `dashboard.defaultFilter` | UI prefs | 5/6 |
-| **Git** |
-| `git.enabled`, `git.remote`, `git.autoCommit`, `git.autoPush`, `git.commitMessageTemplate`, `git.pushRetries` | Phase-7 git-backed storage | 7 |
-| **CLI behavior** |
-| `cli.editor`, `cli.confirmBeforeSend` (default `true`), `cli.openPdfAfterPreview` | UX knobs (`--yes` flag overrides `confirmBeforeSend`) | 3 |
-| `cli.locale`, `cli.logLevel` | Misc | 3 |
-| **LLM (deferred to Phase 9)** |
-| `llm.provider` (`ollama`/`lmstudio`/`openai-compatible`/`disabled`), `llm.endpoint`, `llm.model`, `llm.temperature`, `llm.maxTokens`, `llm.systemPromptOverride`, `llm.features.*` | Future chat | 9 |
+| Key                                                                                                                                                                                | Purpose                                                           | Phase                   |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- | ----------------------- |
+| **Identity**                                                                                                                                                                       |
+| `name`, `email`                                                                                                                                                                    | Sender identity                                                   | 1                       |
+| `company.name`, `company.address`, `company.phone`, `company.website`, `company.taxId`                                                                                             | Printed on the HTML invoice + From header                         | 4 (HTML invoice design) |
+| `branding.primaryColor`, `branding.fontFamily`, `branding.logoUrl`                                                                                                                 | Visual design of the HTML invoice                                 | 4                       |
+| **Invoice defaults**                                                                                                                                                               |
+| `currency`                                                                                                                                                                         | Default currency code                                             | 1                       |
+| `invoice.numberFormat` (string with `{SEQ}/{YYYY}/{MM}/{DD}`), `invoice.nextSeq` (integer)                                                                                         | Display-format generation                                         | 1                       |
+| `invoice.defaultDueDays`                                                                                                                                                           | `dueDate = issueDate + N`                                         | 1                       |
+| `invoice.defaultTaxRate`, `invoice.taxLabel`                                                                                                                                       | Tax line                                                          | 4                       |
+| `invoice.defaultNotes`, `invoice.paymentInstructions`, `invoice.dateFormat`, `invoice.currencyFormat`                                                                              | HTML invoice content + formatting                                 | 4                       |
+| **Email recipients (recipe)**                                                                                                                                                      |
+| `email.recipients.to: string[]`                                                                                                                                                    | Default `to` list (e.g. `["hello@creowis.com"]`)                  | 1                       |
+| `email.recipients.cc: string[]`, `email.recipients.bcc: string[]`                                                                                                                  | Default cc/bcc                                                    | 1                       |
+| `email.subjectTemplate`, `email.bodyTemplate`                                                                                                                                      | Customizable subject/body                                         | 5                       |
+| `email.replyTo`                                                                                                                                                                    | Reply-to header                                                   | 5                       |
+| **SMTP**                                                                                                                                                                           |
+| `smtp.host`, `smtp.port`, `smtp.user`                                                                                                                                              | Connection (password in keychain)                                 | 1                       |
+| **IMAP / sync**                                                                                                                                                                    |
+| `imap.host`, `imap.port`, `imap.user`                                                                                                                                              | Connection (password in keychain)                                 | 1                       |
+| `imap.folder`                                                                                                                                                                      | **Folder to sync from. The only thing that scopes what you see.** | 1                       |
+| `sync.maxBackfillMonths`                                                                                                                                                           | Cap on `--backfill`                                               | 2                       |
+| **Storage / migration**                                                                                                                                                            |
+| `storage.backend` (`sqlite` in v1)                                                                                                                                                 | Active store implementation                                       | 1                       |
+| `storage.dbPath`                                                                                                                                                                   | Override `~/.invoice/local.db`                                    | 3                       |
+| **Dashboard**                                                                                                                                                                      |
+| `dashboard.port`, `dashboard.host`                                                                                                                                                 | Bind address (default `127.0.0.1:3000`)                           | 5                       |
+| `dashboard.theme`, `dashboard.defaultSort`, `dashboard.defaultFilter`                                                                                                              | UI prefs                                                          | 5/6                     |
+| **Git**                                                                                                                                                                            |
+| `git.enabled`, `git.remote`, `git.autoCommit`, `git.autoPush`, `git.commitMessageTemplate`, `git.pushRetries`                                                                      | Phase-7 git-backed storage                                        | 7                       |
+| **CLI behavior**                                                                                                                                                                   |
+| `cli.editor`, `cli.confirmBeforeSend` (default `true`), `cli.openPdfAfterPreview`                                                                                                  | UX knobs (`--yes` flag overrides `confirmBeforeSend`)             | 3                       |
+| `cli.locale`, `cli.logLevel`                                                                                                                                                       | Misc                                                              | 3                       |
+| **LLM (deferred to Phase 9)**                                                                                                                                                      |
+| `llm.provider` (`ollama`/`lmstudio`/`openai-compatible`/`disabled`), `llm.endpoint`, `llm.model`, `llm.temperature`, `llm.maxTokens`, `llm.systemPromptOverride`, `llm.features.*` | Future chat                                                       | 9                       |
 
 **Phase-1 essentials**: `name`, `email`, `currency`, `email.recipients.to`, `smtp.*`, `imap.{host,port,user,folder}`, `invoice.{numberFormat,nextSeq,defaultDueDays}`, `storage.backend`. The Zod schema in Phase 1 declares all keys above with sensible defaults — later phases just light up consumers.
 
@@ -377,6 +381,7 @@ The dashboard is a Hono server that runs on the team member's laptop on `127.0.0
 **Setup (one-time)**: `cd packages/dashboard && npm install`. That's it. There's no build step — TypeScript is compiled by `tsx` or `tsc --watch` during dev, or pre-compiled at install. The HTML and CSS ship as-is.
 
 **Daily usage**:
+
 1. Run `invoice dashboard`. Hono spawns on `127.0.0.1:3000` and the browser opens to `/invoices`.
 2. The page shows what's in `local.db`. The list is rendered server-side as HTML.
 3. Click "Sync now" → vanilla JS `fetch('/sync', { method: 'POST' })` → Hono calls `core/ingest` → DB updated → page refreshed.
@@ -389,6 +394,7 @@ The dashboard is a Hono server that runs on the team member's laptop on `127.0.0
 - `/analytics` — aggregate cards from `core/queries.ts/aggregate`: total billed, total outstanding, top senders, top customers, monthly trend, overdue count + total.
 
 **API routes**:
+
 - `POST /sync` — calls `core/ingest`.
 - `PATCH /invoices/:id/status` — paid/unpaid.
 - `GET /invoices`, `GET /invoices/:id` — JSON for the client JS (used by paid-toggle without full page reload).
@@ -439,7 +445,7 @@ End-to-end smoke test on a single machine. The same person plays both roles by r
 16. Click "Sync now" → 0 new (consistent with CLI). Confirms shared code path.
 17. Open detail → custom field highlighted; "Mark paid/unpaid" toggles; "Print" → `window.print()` shows the printable HTML invoice.
 18. `/analytics` → 1 invoice, 1 paid, 0 overdue, totals match.
-19. **Folder-scoping test**: in a second `HOME`, `invoice init` again with the same Gmail but `imap.folder = INBOX`. `invoice sync` → finds the email there too (since you sent it to `hello@creowis.com`, but here, from the same Gmail, INBOX won't have it — replace with a real second mailbox to verify). The point: this install only sees what's in *its* folder.
+19. **Folder-scoping test**: in a second `HOME`, `invoice init` again with the same Gmail but `imap.folder = INBOX`. `invoice sync` → finds the email there too (since you sent it to `hello@creowis.com`, but here, from the same Gmail, INBOX won't have it — replace with a real second mailbox to verify). The point: this install only sees what's in _its_ folder.
 20. **Configuration sanity**: `invoice config doctor` reports OK; rename `imap-app-password` in keychain → `invoice sync` errors with "IMAP login failed; run `invoice init`" and the doctor flags it.
 21. **Number-format change**: `invoice config set invoice.numberFormat "NEW-{YYYY}-{SEQ}"`, `invoice new`, send → new invoice has the new prefix; old invoices retain their old number.
 22. **Dashboard binding**: from another machine on the LAN, `curl http://<this-machine>:3000` → connection refused (only `127.0.0.1`).
@@ -453,6 +459,7 @@ Phases are re-ordered to reflect the v2 architecture. The "PDF design" phase fro
 **Goal**: end-to-end create + send + sync, on a single role, against the user's own mail account.
 
 **Build**:
+
 - Monorepo scaffold (`shared/`, `core/`, `cli/`).
 - `shared/`: `Invoice` type, `DEFAULT_FIELDS`, `renderInvoiceNumber()`, email-format constants, **Zod config schema with all keys declared**.
 - `core/`: `InvoiceStore` interface, `SqliteStore` impl, `imap.ts`, `ingest.ts`, `queries.ts` (basic).
@@ -468,6 +475,7 @@ Phases are re-ordered to reflect the v2 architecture. The "PDF design" phase fro
 **Goal**: full CLI feature set against the local DB.
 
 **Build**:
+
 - `invoice list` filter flags: `--paid / --unpaid / --overdue / --has-custom / --customer / --since / --due-before / --due-after / --sort`.
 - `invoice mark`, `invoice export csv`, `invoice preview`.
 - `invoice sync --backfill / --since`.
@@ -480,6 +488,7 @@ Phases are re-ordered to reflect the v2 architecture. The "PDF design" phase fro
 **Goal**: smooth ergonomics + prove that folder-based scoping works.
 
 **Build**:
+
 - `invoice config doctor`, friendly setup hints.
 - Robust error paths: SMTP/IMAP auth failure, malformed sidecar, missing fields, network timeouts.
 - File-permission hardening on `~/.invoice/`.
@@ -492,6 +501,7 @@ Phases are re-ordered to reflect the v2 architecture. The "PDF design" phase fro
 **Goal**: the HTML invoice (used both as email body and dashboard print view) looks professional.
 
 **Build**:
+
 - Real branding: logo, color, typography from `branding.*` config.
 - Line-item table, tax line, totals, payment instructions block.
 - Proven across line-item lengths (0, few, many → page break in `window.print()`).
@@ -503,6 +513,7 @@ Phases are re-ordered to reflect the v2 architecture. The "PDF design" phase fro
 **Goal**: read-only dashboard + sync + paid toggle.
 
 **Build**:
+
 - `packages/dashboard/` Hono server bound to `127.0.0.1`.
 - Pages: `/invoices`, `/invoices/:id`, `/analytics` (skeleton).
 - API: `POST /sync`, `PATCH /invoices/:id/status`, `GET /invoices(:id)`.
@@ -516,6 +527,7 @@ Phases are re-ordered to reflect the v2 architecture. The "PDF design" phase fro
 **Goal**: deeper reporting in the browser.
 
 **Build**:
+
 - `/analytics` cards + monthly-trend chart (small SVG, no chart library; if needed, a lightweight one).
 - `GET /export/csv?<filter>` and "Export CSV" button.
 
@@ -526,6 +538,7 @@ Phases are re-ordered to reflect the v2 architecture. The "PDF design" phase fro
 **Goal**: `~/.invoice/data/` mirror, optionally pushed to a private GitHub repo.
 
 **Build**:
+
 - `core/git.ts` shell-out wrapper.
 - `invoice repo init/status/commit/push/log`.
 - Hooks: when `git.autoCommit = true`, every state-changing CLI command writes a JSON snapshot to `data/invoices/<uuid>.json` and commits.
@@ -536,6 +549,7 @@ Phases are re-ordered to reflect the v2 architecture. The "PDF design" phase fro
 ### Phase 8 (optional, future) — Hosted DB migration
 
 If/when local SQLite stops being enough:
+
 1. Implement `core/postgres-store.ts` (or equivalent) against the existing `InvoiceStore` interface.
 2. `invoice migrate <from> <to>` command streams rows via `from.list()` → `to.upsert()`.
 3. Switch `storage.backend` and `storage.connectionUrl` in config.
@@ -557,15 +571,18 @@ The CLI commands, query layer, CSV export, dashboard, and ingestion don't change
 `InvoiceStore` in `packages/core/src/store.ts` is the boundary that makes hosted-DB migration a single new file. Established in Phase 1 even though we only ship `SqliteStore`.
 
 What stays portable across a migration to Fly.io / Postgres / Supabase / equivalent:
+
 - `Invoice`, `DEFAULT_FIELDS` — pure data.
 - `InvoiceFilter`, `AggregateSpec` — typed objects, not raw SQL.
 - Every CLI command, dashboard page, CSV exporter, and ingestion call — they all see `InvoiceStore`.
 
 What enables the migration:
+
 - `migrate <from> <to>` command (Phase 8) streams rows through the interface.
 - Same query suite tested against any new store impl.
 
 What is NOT promised:
+
 - `payment_status` toggle history (no event log) — re-marking is the only way to reach a state.
 - IMAP watermark — re-syncing from the mail provider is the recovery path.
 
@@ -581,6 +598,7 @@ What is NOT promised:
 This is the concrete implementation plan for Phase 1. Each step is a discrete, verifiable unit. Stop and run the checkpoint before moving on.
 
 **Stack baseline (locked in at Step 0)**:
+
 - Package manager: **pnpm with workspaces** (`pnpm-workspace.yaml`).
 - Module system: **ESM** (`"type": "module"`), TypeScript `moduleResolution: "NodeNext"`, `target: "ES2022"`, `strict: true`.
 - Build: **tsc per package** (`pnpm -r build` runs `tsc -b`). Dev runs the CLI via **`tsx`** so there's no rebuild loop.
@@ -593,6 +611,7 @@ This is the concrete implementation plan for Phase 1. Each step is a discrete, v
 ### Step 0 — Workspace bootstrap
 
 **Files**:
+
 - `package.json` (root) — scripts: `build`, `dev`, `test`, `lint`, `format`. No deps yet.
 - `pnpm-workspace.yaml` — `packages: ['packages/*']`.
 - `tsconfig.base.json` — strict, NodeNext, declaration maps on, `composite: true` for project refs.
@@ -608,6 +627,7 @@ This is the concrete implementation plan for Phase 1. Each step is a discrete, v
 ### Step 1 — `packages/shared`
 
 **Files**:
+
 - `packages/shared/package.json` — name `@invoice/shared`, `type: module`, exports map, `tsc -b` build script.
 - `packages/shared/tsconfig.json` — extends base; `composite: true`; `outDir: dist`.
 - `packages/shared/src/invoice.ts` — `DEFAULT_FIELDS`, `Invoice` interface, `renderInvoiceNumber(format, seq, date)` with `{SEQ}/{YYYY}/{MM}/{DD}` substitution.
@@ -625,6 +645,7 @@ This is the concrete implementation plan for Phase 1. Each step is a discrete, v
 ### Step 2 — `packages/core` storage layer
 
 **Files**:
+
 - `packages/core/package.json` — depends on `@invoice/shared: workspace:*`.
 - `packages/core/src/store.ts` — `InvoiceStore` interface, `InvoiceFilter`, `SortSpec`, `AggregateSpec`, `AggregateResult`.
 - `packages/core/src/sqlite-store.ts` — opens `local.db`, runs schema + indexes from the plan's "SQLite schema" section on first open. Implements all `InvoiceStore` methods. `aggregate()` can be a stub that throws in Phase 1 (Phase 6 implements it).
@@ -639,6 +660,7 @@ This is the concrete implementation plan for Phase 1. Each step is a discrete, v
 ### Step 3 — `packages/core` IMAP + ingest
 
 **Files**:
+
 - `packages/core/src/imap.ts` — `connect(config, password)` returns an `imapflow` client; `listFolders(client)` returns folder names + special-use flags; `fetchSince(client, folder, lastUid)` async-iterates raw RFC 822 messages newer than `lastUid` that match the `X-Invoice-Generator` header.
 - `packages/core/src/ingest.ts` — `ingest(store, client, folder, lastUid)`: drives `fetchSince`, parses each via `mailparser`, locates the `invoice-<n>.json` attachment, calls `store.upsert`, returns `{ syncedCount, newLastUid }`. **This is the single function called from CLI sync and dashboard `/sync`.**
 - Tests:
@@ -651,8 +673,9 @@ This is the concrete implementation plan for Phase 1. Each step is a discrete, v
 ### Step 4 — `packages/cli` foundation (no commands yet)
 
 **Files**:
+
 - `packages/cli/package.json` — bin `{ "invoice": "./dist/index.js" }`, depends on `@invoice/shared` and `@invoice/core`.
-- `packages/cli/src/index.ts` — commander entry. Registers every Phase-1 command as a *stub* that prints `not yet implemented`. Shebang `#!/usr/bin/env node`.
+- `packages/cli/src/index.ts` — commander entry. Registers every Phase-1 command as a _stub_ that prints `not yet implemented`. Shebang `#!/usr/bin/env node`.
 - `packages/cli/src/store.ts` — `INVOICE_DIR = ~/.invoice`, `configPath()`, `dbPath()`, `loadConfig()`, `saveConfig(partial)`. **Enforces `0700` on the dir and `0600` on `config.json`.**
 - `packages/cli/src/secrets.ts` — wraps `@napi-rs/keyring`. Exports `getPassword(account)`, `setPassword(account, value)`, `deletePassword(account)`. Service constant `'invoice-cli'`. Accounts: `'smtp-app-password'`, `'imap-app-password'`.
 - `packages/cli/src/email.ts` — `sendInvoice(invoice, recipients, smtp, password)` builds a `nodemailer` mail with: subject from `email-format`, plain HTML body (template string for v1), single JSON-sidecar attachment, `X-Invoice-Generator: 1` header. No PDF.
@@ -666,6 +689,7 @@ This is the concrete implementation plan for Phase 1. Each step is a discrete, v
 ### Step 5 — `init`, `whoami`, `config` commands
 
 **Files**:
+
 - `packages/cli/src/commands/init.ts` — interactive flow:
   1. Prompt `name`, `email`, `currency`, `invoice.numberFormat` (default `INV-{YYYY}-{SEQ}`).
   2. SMTP host/port/user + app password → keychain. Test connection (`nodemailer.verify()`); fail with clear message if rejected.
@@ -683,6 +707,7 @@ This is the concrete implementation plan for Phase 1. Each step is a discrete, v
 ### Step 6 — `new`, `list` commands
 
 **Files**:
+
 - `packages/cli/src/commands/new.ts`:
   1. Generate `id = uuid()`, compute `default.invoiceNumber` via `renderInvoiceNumber(config.invoice.numberFormat, config.invoice.nextSeq, today)`.
   2. Interactive walkthrough of `DEFAULT_FIELDS` (line items as a sub-loop).
@@ -696,6 +721,7 @@ This is the concrete implementation plan for Phase 1. Each step is a discrete, v
 ### Step 7 — `send` command
 
 **Files**:
+
 - `packages/cli/src/commands/send.ts`:
   1. Look up invoice by `id`. Bail if `status === 'sent'` already.
   2. Compose recipients: start from `config.email.recipients`, apply `--to / --cc / --bcc` overrides (override fully, not merge).
@@ -709,6 +735,7 @@ This is the concrete implementation plan for Phase 1. Each step is a discrete, v
 ### Step 8 — `sync`, `mark` commands
 
 **Files**:
+
 - `packages/cli/src/commands/sync.ts`:
   1. Read `imap.*` from config + password from keychain.
   2. `client = await connect(...)`. Open `imap.folder`.
@@ -723,12 +750,14 @@ This is the concrete implementation plan for Phase 1. Each step is a discrete, v
 ### Step 9 — Phase 1 verification
 
 **Run**:
+
 - `pnpm test` — all unit tests green.
 - `pnpm exec tsc --build` — clean.
 - `pnpm lint` — clean.
 - Walk the plan's full **Verification** section, steps 1–11 (Phase-1 covers `init` → `send` → `sync` → `mark`; later verification steps depend on commands that arrive in Phase 2+).
 
 **Housekeeping**:
+
 - Update `CLAUDE.md` "Phase status" → "Phase 1 complete. Active: Phase 2."
 - Tag a `v0.1.0` commit.
 

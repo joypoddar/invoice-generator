@@ -17,7 +17,7 @@ The full design is in [`PLAN.md`](./PLAN.md). **Read it before starting work** �
 
 These are non-obvious from reading the code. Internalize them.
 
-1. **No role separation in the codebase.** No `auth.ts`, no `roles()`, no `invoice admin` namespace. Anywhere you're tempted to write "if admin," stop — the answer is folder configuration, not code. The word *admin* should not appear as a CLI role designator.
+1. **No role separation in the codebase.** No `auth.ts`, no `roles()`, no `invoice admin` namespace. Anywhere you're tempted to write "if admin," stop — the answer is folder configuration, not code. The word _admin_ should not appear as a CLI role designator.
 2. **Email is the source of truth.** SQLite is derived. If `local.db` is lost, `invoice sync --backfill` rebuilds it from the mail provider.
 3. **Manual sync only.** No timers, no daemons, no background jobs. The user clicks "Sync now" or runs `invoice sync`.
 4. **`InvoiceStore` interface (`packages/core/src/store.ts`) is the migration boundary.** All filtering, aggregation, CSV export, and dashboard pages go through it. **Never write SQL outside `core/sqlite-store.ts`.** A future hosted-DB migration adds one new file (`postgres-store.ts`) and flips `storage.backend` in config; nothing else changes.
@@ -64,7 +64,7 @@ When you complete a phase, update this section so the next session knows where t
 ## Conventions
 
 - **TypeScript strict mode from day one.** No `any` outside justified narrow places.
-- **No comments by default.** Only add a comment if the *why* is non-obvious — a hidden constraint, a deliberate workaround, or behavior that would surprise a reader. Don't explain *what* the code does; named identifiers do that.
+- **No comments by default.** Only add a comment if the _why_ is non-obvious — a hidden constraint, a deliberate workaround, or behavior that would surprise a reader. Don't explain _what_ the code does; named identifiers do that.
 - **No files outside what the plan calls for.** Don't add abstractions, "future-proofing," or scaffolding the plan didn't authorize.
 - **Tests live next to source** (`*.test.ts` siblings). Highest-leverage targets: `core/ingest` (sidecar parsing), `core/queries` (filter/sort/aggregate against an in-memory `InvoiceStore`), the IMAP folder picker.
 - **Commit small, descriptive units.** When `git.autoCommit` lands (Phase 7), messages follow `{action}: {invoiceNumber}` (`add: CREOWIS-2026-AK-0042`, `update: paid status on ...`).

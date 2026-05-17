@@ -52,14 +52,14 @@ invoice list          # show local DB
 
 ## Repository layout
 
-| Path | Purpose |
-|---|---|
-| [`PLAN.md`](./PLAN.md) | Full design — architecture, decisions, all phases. The source of truth. |
-| [`CLAUDE.md`](./CLAUDE.md) | Guidance for AI-assisted development sessions. |
-| `packages/shared/` | `Invoice` type, email-format constants, Zod config schema. |
-| `packages/core/` | `InvoiceStore` + storage, IMAP wrapper, ingestion, queries, CSV. |
-| `packages/cli/` | The `invoice` binary (single command, no role gating). |
-| `packages/dashboard/` | Hono server + server-rendered JSX views. |
+| Path                       | Purpose                                                                 |
+| -------------------------- | ----------------------------------------------------------------------- |
+| [`PLAN.md`](./PLAN.md)     | Full design — architecture, decisions, all phases. The source of truth. |
+| [`CLAUDE.md`](./CLAUDE.md) | Guidance for AI-assisted development sessions.                          |
+| `packages/shared/`         | `Invoice` type, email-format constants, Zod config schema.              |
+| `packages/core/`           | `InvoiceStore` + storage, IMAP wrapper, ingestion, queries, CSV.        |
+| `packages/cli/`            | The `invoice` binary (single command, no role gating).                  |
+| `packages/dashboard/`      | Hono server + server-rendered JSX views.                                |
 
 ## Roadmap
 
@@ -70,8 +70,8 @@ invoice list          # show local DB
 5. **Phase 5** — Hono dashboard MVP (read-only + Sync now + paid toggle).
 6. **Phase 6** — Dashboard analytics + CSV export.
 7. **Phase 7** — Git-backed storage of `~/.invoice/data/` (opt-in).
-8. **Phase 8** *(optional, future)* — Hosted DB migration via `InvoiceStore`.
-9. **Phase 9** *(optional, future)* — Local LLM (`invoice chat`) with tool-calling.
+8. **Phase 8** _(optional, future)_ — Hosted DB migration via `InvoiceStore`.
+9. **Phase 9** _(optional, future)_ — Local LLM (`invoice chat`) with tool-calling.
 
 ## Tech stack
 
