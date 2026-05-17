@@ -576,6 +576,172 @@ What is NOT promised:
 - **Send confirmation** → on by default, `--yes` bypass.
 - **IMAP folder auto-detection** → use `imapflow.list()` and present special-use-flagged folders first; full picker as fallback. Implemented in `init`.
 
+## Phase 1 — Step-by-Step Build Order
+
+This is the concrete implementation plan for Phase 1. Each step is a discrete, verifiable unit. Stop and run the checkpoint before moving on.
+
+**Stack baseline (locked in at Step 0)**:
+- Package manager: **pnpm with workspaces** (`pnpm-workspace.yaml`).
+- Module system: **ESM** (`"type": "module"`), TypeScript `moduleResolution: "NodeNext"`, `target: "ES2022"`, `strict: true`.
+- Build: **tsc per package** (`pnpm -r build` runs `tsc -b`). Dev runs the CLI via **`tsx`** so there's no rebuild loop.
+- Tests: **Vitest** (root config, picks up `*.test.ts` siblings).
+- Lint/format: ESLint flat config (`@typescript-eslint`, `eslint-config-prettier`) + Prettier.
+- Internal deps use workspace protocol: `"@invoice/shared": "workspace:*"`.
+
+**Naming conventions**: packages are `@invoice/shared`, `@invoice/core`, `@invoice/cli`. The bin produced by `@invoice/cli` is just `invoice`.
+
+### Step 0 — Workspace bootstrap
+
+**Files**:
+- `package.json` (root) — scripts: `build`, `dev`, `test`, `lint`, `format`. No deps yet.
+- `pnpm-workspace.yaml` — `packages: ['packages/*']`.
+- `tsconfig.base.json` — strict, NodeNext, declaration maps on, `composite: true` for project refs.
+- `tsconfig.json` (root) — references all four packages, no `files`.
+- `.npmrc` — `engine-strict=true`, `node-linker=isolated`.
+- `.editorconfig`, `.prettierrc.json`, `eslint.config.js` (flat config).
+- `vitest.config.ts` — root config with workspace `include`.
+
+**Deps**: `typescript`, `tsx`, `vitest`, `eslint`, `@typescript-eslint/*`, `prettier`, `eslint-config-prettier` (all dev).
+
+**Checkpoint**: `pnpm install` succeeds; `pnpm exec tsc --build` is a no-op success; `pnpm test` reports 0 tests.
+
+### Step 1 — `packages/shared`
+
+**Files**:
+- `packages/shared/package.json` — name `@invoice/shared`, `type: module`, exports map, `tsc -b` build script.
+- `packages/shared/tsconfig.json` — extends base; `composite: true`; `outDir: dist`.
+- `packages/shared/src/invoice.ts` — `DEFAULT_FIELDS`, `Invoice` interface, `renderInvoiceNumber(format, seq, date)` with `{SEQ}/{YYYY}/{MM}/{DD}` substitution.
+- `packages/shared/src/email-format.ts` — `INVOICE_HEADER_NAME = 'X-Invoice-Generator'`, `INVOICE_HEADER_VALUE = '1'`, `subjectFor(invoice)`, `sidecarFilenameFor(invoiceNumber)`.
+- `packages/shared/src/config-schema.ts` — Zod schema declaring **every** config key from the Configuration section (with defaults for everything except Phase-1 essentials, which are required). Export `type Config = z.infer<typeof ConfigSchema>`.
+- `packages/shared/src/index.ts` — barrel re-export.
+- Tests:
+  - `invoice.test.ts` — template substitution for each var, zero-padded SEQ, mid-flight format change keeps old numbers untouched.
+  - `config-schema.test.ts` — valid Phase-1 config parses; missing essential keys fail with a clear message; deferred keys get defaults.
+
+**Runtime deps**: `zod`.
+
+**Checkpoint**: `pnpm -F @invoice/shared test` → green.
+
+### Step 2 — `packages/core` storage layer
+
+**Files**:
+- `packages/core/package.json` — depends on `@invoice/shared: workspace:*`.
+- `packages/core/src/store.ts` — `InvoiceStore` interface, `InvoiceFilter`, `SortSpec`, `AggregateSpec`, `AggregateResult`.
+- `packages/core/src/sqlite-store.ts` — opens `local.db`, runs schema + indexes from the plan's "SQLite schema" section on first open. Implements all `InvoiceStore` methods. `aggregate()` can be a stub that throws in Phase 1 (Phase 6 implements it).
+- `packages/core/src/queries.ts` — currently a thin pass-through that just calls `store.list(filter, sort)`; exists as the seam for Phase 2 filter expansion.
+- Tests:
+  - `sqlite-store.test.ts` — opens a temp DB, upserts a few invoices, lists them, gets by id, deletes; verifies `message_uid` UNIQUE enforces idempotency.
+
+**Runtime deps**: `better-sqlite3`. **Dev**: `@types/better-sqlite3`.
+
+**Checkpoint**: `pnpm -F @invoice/core test` → green.
+
+### Step 3 — `packages/core` IMAP + ingest
+
+**Files**:
+- `packages/core/src/imap.ts` — `connect(config, password)` returns an `imapflow` client; `listFolders(client)` returns folder names + special-use flags; `fetchSince(client, folder, lastUid)` async-iterates raw RFC 822 messages newer than `lastUid` that match the `X-Invoice-Generator` header.
+- `packages/core/src/ingest.ts` — `ingest(store, client, folder, lastUid)`: drives `fetchSince`, parses each via `mailparser`, locates the `invoice-<n>.json` attachment, calls `store.upsert`, returns `{ syncedCount, newLastUid }`. **This is the single function called from CLI sync and dashboard `/sync`.**
+- Tests:
+  - `ingest.test.ts` — feeds a fixture raw email through a stubbed imapflow stream; asserts the right upsert payload reaches a fake `InvoiceStore`. Don't hit a real IMAP server in unit tests.
+
+**Runtime deps**: `imapflow`, `mailparser`. **Dev**: `@types/mailparser`.
+
+**Checkpoint**: `pnpm -F @invoice/core test` → green (all tests, including the new one).
+
+### Step 4 — `packages/cli` foundation (no commands yet)
+
+**Files**:
+- `packages/cli/package.json` — bin `{ "invoice": "./dist/index.js" }`, depends on `@invoice/shared` and `@invoice/core`.
+- `packages/cli/src/index.ts` — commander entry. Registers every Phase-1 command as a *stub* that prints `not yet implemented`. Shebang `#!/usr/bin/env node`.
+- `packages/cli/src/store.ts` — `INVOICE_DIR = ~/.invoice`, `configPath()`, `dbPath()`, `loadConfig()`, `saveConfig(partial)`. **Enforces `0700` on the dir and `0600` on `config.json`.**
+- `packages/cli/src/secrets.ts` — wraps `@napi-rs/keyring`. Exports `getPassword(account)`, `setPassword(account, value)`, `deletePassword(account)`. Service constant `'invoice-cli'`. Accounts: `'smtp-app-password'`, `'imap-app-password'`.
+- `packages/cli/src/email.ts` — `sendInvoice(invoice, recipients, smtp, password)` builds a `nodemailer` mail with: subject from `email-format`, plain HTML body (template string for v1), single JSON-sidecar attachment, `X-Invoice-Generator: 1` header. No PDF.
+- Tests:
+  - `email.test.ts` — feed a fixture invoice + recipients, assert the resulting `Mail.Options` object: subject text, headers, attachments[0] name and content. Mock the transport — no real SMTP.
+
+**Runtime deps**: `@invoice/shared`, `@invoice/core`, `commander`, `@inquirer/prompts`, `@napi-rs/keyring`, `nodemailer`, `open`, `uuid`. **Dev**: `@types/nodemailer`, `@types/uuid`.
+
+**Checkpoint**: `pnpm -F @invoice/cli build && pnpm -F @invoice/cli exec node dist/index.js --help` → prints commander help with all stubs listed. `pnpm test` → green.
+
+### Step 5 — `init`, `whoami`, `config` commands
+
+**Files**:
+- `packages/cli/src/commands/init.ts` — interactive flow:
+  1. Prompt `name`, `email`, `currency`, `invoice.numberFormat` (default `INV-{YYYY}-{SEQ}`).
+  2. SMTP host/port/user + app password → keychain. Test connection (`nodemailer.verify()`); fail with clear message if rejected.
+  3. IMAP host/port/user + app password → keychain. Test connection (`client.connect()`).
+  4. **List folders** via `core/imap.listFolders`; surface special-use `\Sent` / `\Inbox` first; ask the user to pick. Save as `imap.folder`.
+  5. Prompt `email.recipients.to[]` (CSV input, default `["hello@creowis.com"]`).
+  6. Save config (Zod-validated); create `~/.invoice/local.db` via `SqliteStore` open.
+- `packages/cli/src/commands/whoami.ts` — prints `name`, `email`, `imap.folder`, IMAP `user`. Or "Not configured. Run `invoice init`."
+- `packages/cli/src/commands/config.ts` — `get [key]`, `set <key> <value>`, `unset <key>`, `edit` (`$EDITOR`), `validate`, `doctor`. `doctor` walks each Phase-1 required key + checks both keychain accounts exist.
+
+**Wire in `index.ts`**.
+
+**Checkpoint**: `invoice init` (via `pnpm exec tsx packages/cli/src/index.ts init`) completes a full happy-path setup against a real Gmail (with app passwords). `invoice whoami` prints the expected output. `invoice config doctor` → "all good".
+
+### Step 6 — `new`, `list` commands
+
+**Files**:
+- `packages/cli/src/commands/new.ts`:
+  1. Generate `id = uuid()`, compute `default.invoiceNumber` via `renderInvoiceNumber(config.invoice.numberFormat, config.invoice.nextSeq, today)`.
+  2. Interactive walkthrough of `DEFAULT_FIELDS` (line items as a sub-loop).
+  3. `Add additional fields? (y/N)` loop for `custom`.
+  4. `store.upsert({ id, default, custom, status: 'draft', paymentStatus: 'unpaid' })`.
+  5. Bump `config.invoice.nextSeq` and save.
+- `packages/cli/src/commands/list.ts` — `store.list()` (no filters in Phase 1; Phase 2 adds them). Renders a small table: number, customer, due, status, sent.
+
+**Checkpoint**: `invoice new` creates a draft. `invoice list` shows it.
+
+### Step 7 — `send` command
+
+**Files**:
+- `packages/cli/src/commands/send.ts`:
+  1. Look up invoice by `id`. Bail if `status === 'sent'` already.
+  2. Compose recipients: start from `config.email.recipients`, apply `--to / --cc / --bcc` overrides (override fully, not merge).
+  3. Render the body and a one-screen summary (recipients + line-item totals + invoice number).
+  4. **Confirmation prompt** unless `--yes` (or `config.cli.confirmBeforeSend === false`): `Send? [y/N]`.
+  5. `email.sendInvoice(...)` with both SMTP password from keychain.
+  6. On success: `store.upsert({ ...invoice, status: 'sent', sentAt: now, recipients })`. On failure: don't update status; surface the error.
+
+**Checkpoint**: `invoice send <id>` shows the confirm screen, sends, and the email arrives with the JSON sidecar attached and `X-Invoice-Generator: 1` in the raw headers. `invoice send <id> --yes` skips the prompt.
+
+### Step 8 — `sync`, `mark` commands
+
+**Files**:
+- `packages/cli/src/commands/sync.ts`:
+  1. Read `imap.*` from config + password from keychain.
+  2. `client = await connect(...)`. Open `imap.folder`.
+  3. Read `sync_state.last_uid` (or 0 if first run).
+  4. `const { syncedCount, newLastUid } = await ingest(store, client, folder, lastUid)`.
+  5. Update `sync_state.last_uid = newLastUid` if higher.
+  6. Print `Synced N new invoice(s).`
+- `packages/cli/src/commands/mark.ts` — `mark <id> paid|unpaid`. Updates `payment_status` and `paid_at`.
+
+**Checkpoint**: `invoice send <id>` → `invoice sync` reports 1 new. Re-run → 0 new. `invoice mark <id> paid` updates the row.
+
+### Step 9 — Phase 1 verification
+
+**Run**:
+- `pnpm test` — all unit tests green.
+- `pnpm exec tsc --build` — clean.
+- `pnpm lint` — clean.
+- Walk the plan's full **Verification** section, steps 1–11 (Phase-1 covers `init` → `send` → `sync` → `mark`; later verification steps depend on commands that arrive in Phase 2+).
+
+**Housekeeping**:
+- Update `CLAUDE.md` "Phase status" → "Phase 1 complete. Active: Phase 2."
+- Tag a `v0.1.0` commit.
+
+### What is NOT in Phase 1 (don't accidentally build)
+
+- `invoice preview` / `invoice export csv` — Phase 2.
+- `invoice list` filter flags (`--paid`, `--overdue`, etc.) — Phase 2.
+- `invoice sync --backfill / --since` — Phase 2.
+- `invoice dashboard` and the entire `packages/dashboard/` — Phases 5–6.
+- `invoice repo *` — Phase 7.
+- Real HTML invoice design (logo, colors, etc.) — Phase 4. Phase 1's HTML body is a plain functional template.
+- PDF generation — explicitly never.
+
 ## Out of scope (explicit non-goals)
 
 - Any hosted/cloud component beyond the mail provider itself.
