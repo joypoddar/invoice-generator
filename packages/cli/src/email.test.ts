@@ -55,6 +55,13 @@ describe('buildMailOptions', () => {
     expect(opts.subject).toContain('USD');
   });
 
+  it('threads RenderOpts through to the HTML body', () => {
+    const opts = buildMailOptions(makeInvoice(), recipients, from, {
+      branding: { primaryColor: '#ff00ff' },
+    });
+    expect(opts.html).toContain('#ff00ff');
+  });
+
   it('sets to/cc/bcc as comma-joined strings', () => {
     const opts = buildMailOptions(
       makeInvoice(),
@@ -84,6 +91,129 @@ describe('renderInvoiceHtml', () => {
     expect(html).toContain('INV-2026-0042');
     expect(html).toContain('Acme');
     expect(html).toContain('950.00'); // 5*150 + 200
+  });
+
+  it('formats dates as DD/MM/YYYY by default', () => {
+    const html = renderInvoiceHtml(makeInvoice());
+    expect(html).toContain('17/05/2026'); // issue date
+    expect(html).toContain('17/06/2026'); // due date
+  });
+
+  it('honors a custom dateFormat opts', () => {
+    const html = renderInvoiceHtml(makeInvoice(), { dateFormat: 'YYYY-MM-DD' });
+    expect(html).toContain('2026-05-17');
+  });
+
+  it('uses Intl currency formatting (INR comma-grouping)', () => {
+    const inv = makeInvoice();
+    inv.default.currency = 'INR';
+    inv.default.lineItems = [{ description: 'big', quantity: 1, unitPrice: 1234567.89 }];
+    const html = renderInvoiceHtml(inv);
+    expect(html).toContain('12,34,567.89');
+  });
+
+  it('uses Western grouping for USD', () => {
+    const inv = makeInvoice();
+    inv.default.lineItems = [{ description: 'big', quantity: 1, unitPrice: 12345.67 }];
+    const html = renderInvoiceHtml(inv);
+    expect(html).toContain('12,345.67');
+  });
+
+  it('uses the configured primary color when provided', () => {
+    const html = renderInvoiceHtml(makeInvoice(), { branding: { primaryColor: '#cc0000' } });
+    expect(html).toContain('#cc0000');
+    expect(html).not.toContain('#3949ab');
+  });
+
+  it('uses the default primary color when no branding override', () => {
+    const html = renderInvoiceHtml(makeInvoice());
+    expect(html).toContain('#3949ab');
+  });
+
+  it('uses the configured font family when provided', () => {
+    const html = renderInvoiceHtml(makeInvoice(), {
+      branding: { fontFamily: "'Roboto', sans-serif" },
+    });
+    expect(html).toContain("'Roboto', sans-serif");
+  });
+
+  it('reads company phone from default.companyPhone first', () => {
+    const inv = makeInvoice();
+    inv.default.companyPhone = '+91 99999';
+    inv.custom = { fromPhone: '+1 SHOULD-NOT-WIN' };
+    const html = renderInvoiceHtml(inv);
+    expect(html).toContain('+91 99999');
+    expect(html).not.toContain('SHOULD-NOT-WIN');
+  });
+
+  it('falls back to custom.fromPhone (legacy) when default.companyPhone is missing', () => {
+    const inv = makeInvoice();
+    inv.custom = { fromPhone: '+91 LEGACY' };
+    const html = renderInvoiceHtml(inv);
+    expect(html).toContain('+91 LEGACY');
+  });
+
+  it('reads bank details from default.bank* first', () => {
+    const inv = makeInvoice();
+    inv.default.bankAccountName = 'Joy Poddar';
+    inv.default.bankAccountNumber = '111222333';
+    inv.default.bankIfsc = 'BANK0001';
+    const html = renderInvoiceHtml(inv);
+    expect(html).toContain('Joy Poddar');
+    expect(html).toContain('111222333');
+    expect(html).toContain('BANK0001');
+    expect(html).toContain('Bank Details');
+  });
+
+  it('falls back to custom.bank* for legacy invoices', () => {
+    const inv = makeInvoice();
+    inv.custom = { bankAccountName: 'Legacy Holder', bankIfsc: 'LEGACY01' };
+    const html = renderInvoiceHtml(inv);
+    expect(html).toContain('Legacy Holder');
+    expect(html).toContain('LEGACY01');
+    expect(html).toContain('Bank Details');
+  });
+
+  it('omits the Bank Details block when no bank fields are set', () => {
+    const html = renderInvoiceHtml(makeInvoice());
+    expect(html).not.toContain('Bank Details');
+  });
+
+  it('renders a tax row in the total block when default.taxRate is set', () => {
+    const inv = makeInvoice();
+    inv.default.taxRate = 0.18;
+    inv.default.taxLabel = 'GST';
+    inv.default.taxAmount = 171; // 18% of 950
+    const html = renderInvoiceHtml(inv);
+    expect(html).toContain('Subtotal');
+    expect(html).toContain('GST');
+    expect(html).toContain('18%');
+    expect(html).toContain('171.00');
+    expect(html).toContain('1,121.00'); // total = 950 + 171
+  });
+
+  it('renders Payment Instructions block when set', () => {
+    const inv = makeInvoice();
+    inv.default.paymentInstructions = 'Wire to:\nAccount 12345';
+    const html = renderInvoiceHtml(inv);
+    expect(html).toContain('Payment Instructions');
+    expect(html).toContain('Wire to:');
+    expect(html).toContain('Account 12345');
+  });
+
+  it('does not render Payment Instructions block when unset', () => {
+    const html = renderInvoiceHtml(makeInvoice());
+    expect(html).not.toContain('Payment Instructions');
+  });
+
+  it('reads customer address from default first, custom legacy second', () => {
+    const a = makeInvoice();
+    a.default.customerAddress = 'New default address';
+    expect(renderInvoiceHtml(a)).toContain('New default address');
+
+    const b = makeInvoice();
+    b.custom = { customerAddress: 'Legacy custom address' };
+    expect(renderInvoiceHtml(b)).toContain('Legacy custom address');
   });
 
   it('escapes HTML special characters in fields', () => {

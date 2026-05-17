@@ -4,7 +4,7 @@ import { totalFor, type Invoice } from '@invoice/shared';
 import { SqliteStore } from '@invoice/core';
 import { dbPath, loadConfigSafe } from '../store.js';
 import { getPassword, SMTP_PASSWORD_ACCOUNT } from '../secrets.js';
-import { sendInvoice, type Recipients } from '../email.js';
+import { sendInvoice, type Recipients, type RenderOpts } from '../email.js';
 
 interface SendOptions {
   to?: string[];
@@ -74,11 +74,17 @@ async function runSend(id: string, opts: SendOptions): Promise<void> {
   }
 
   console.log('Sending…');
+  const renderOpts: RenderOpts = {
+    branding: config.branding,
+    dateFormat: config.invoice.dateFormat,
+    currencyFormat: config.invoice.currencyFormat,
+  };
   await sendInvoice(
     invoice,
     recipients,
     { host: config.smtp.host, port: config.smtp.port, user: config.smtp.user },
     password,
+    renderOpts,
   );
 
   const sentInvoice: Invoice = {
