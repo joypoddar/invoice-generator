@@ -10,14 +10,15 @@
     "build": "pnpm -r build",
     "build:clean": "pnpm -r build:clean",
     "typecheck": "pnpm -r typecheck",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "test": "NODE_OPTIONS=--no-warnings=ExperimentalWarning vitest run",
+    "test:watch": "NODE_OPTIONS=--no-warnings=ExperimentalWarning vitest",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@types/node": "^25.8.0",
     "eslint": "^10.4.0",
     "eslint-config-prettier": "^10.1.8",
     "prettier": "^3.8.3",
