@@ -99,17 +99,17 @@ describe('renderInvoiceHtml', () => {
     expect(html).toContain('&lt;script&gt;');
   });
 
-  it('renders a custom-fields section when invoice.custom has keys', () => {
+  it('renders a custom-fields section when invoice.custom has non-bank keys', () => {
     const html = renderInvoiceHtml(
       makeInvoice({ custom: { purchaseOrderNumber: 'PO-123' } }),
     );
-    expect(html).toContain('Additional fields');
+    expect(html).toContain('Additional Information');
     expect(html).toContain('purchaseOrderNumber');
     expect(html).toContain('PO-123');
   });
 
   it('omits the custom-fields section when invoice.custom is empty', () => {
     const html = renderInvoiceHtml(makeInvoice());
-    expect(html).not.toContain('Additional fields');
+    expect(html).not.toContain('Additional Information');
   });
 });

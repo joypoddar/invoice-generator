@@ -54,7 +54,10 @@ async function runNew(): Promise<void> {
     process.exit(1);
   }
 
-  const notes = await input({ message: 'Notes (optional):', default: '' });
+  const notes = await input({
+    message: 'Notes (optional):',
+    default: config.invoice.defaultNotes ?? '',
+  });
 
   const custom: Record<string, unknown> = {};
   let addCustom = await confirm({ message: 'Add additional fields?', default: false });
@@ -65,20 +68,27 @@ async function runNew(): Promise<void> {
     addCustom = await confirm({ message: '  Add another?', default: false });
   }
 
+  const subtotal = lineItems.reduce((s, it) => s + it.quantity * it.unitPrice, 0);
+  const taxRate = config.invoice.defaultTaxRate;
+  const taxLabel = config.invoice.taxLabel;
+  const taxAmount = typeof taxRate === 'number' ? subtotal * taxRate : undefined;
+
   const invoice: Invoice = {
     id: randomUUID(),
-    default: {
+    default: snapshotDefaults({
       invoiceNumber,
       issueDate,
       dueDate,
-      fromName: config.name,
-      fromEmail: config.email,
+      config,
       customerName,
       customerEmail,
-      lineItems,
       currency,
+      lineItems,
+      taxRate,
+      taxLabel,
+      taxAmount,
       notes,
-    },
+    }),
     custom,
     status: 'draft',
     paymentStatus: 'unpaid',
@@ -96,13 +106,70 @@ async function runNew(): Promise<void> {
     invoice: { ...config.invoice, nextSeq: config.invoice.nextSeq + 1 },
   });
 
-  const total = lineItems.reduce((s, it) => s + it.quantity * it.unitPrice, 0);
+  const total = subtotal + (taxAmount ?? 0);
   console.log(`\nCreated draft ${invoiceNumber}`);
   console.log(`  id:       ${invoice.id}`);
   console.log(`  customer: ${customerName}`);
   console.log(`  due:      ${dueDate}`);
+  if (typeof taxAmount === 'number') {
+    console.log(`  subtotal: ${subtotal.toFixed(2)} ${currency}`);
+    console.log(`  tax:      ${taxAmount.toFixed(2)} ${currency} (${((taxRate ?? 0) * 100).toFixed(1)}%)`);
+  }
   console.log(`  total:    ${total.toFixed(2)} ${currency}`);
   console.log(`\nReview with \`invoice list\` or send with \`invoice send ${invoice.id}\`.`);
+}
+
+interface SnapshotInputs {
+  invoiceNumber: string;
+  issueDate: string;
+  dueDate: string;
+  config: import('@invoice/shared').Config;
+  customerName: string;
+  customerEmail: string;
+  currency: string;
+  lineItems: LineItem[];
+  taxRate: number | undefined;
+  taxLabel: string | undefined;
+  taxAmount: number | undefined;
+  notes: string;
+}
+
+function snapshotDefaults(i: SnapshotInputs): Record<string, unknown> {
+  const c = i.config;
+  return omitUndefined({
+    invoiceNumber: i.invoiceNumber,
+    issueDate: i.issueDate,
+    dueDate: i.dueDate,
+    fromName: c.name,
+    fromEmail: c.email,
+    companyName: c.company.name,
+    companyAddress: c.company.address,
+    companyPhone: c.company.phone,
+    companyWebsite: c.company.website,
+    companyTaxId: c.company.taxId,
+    customerName: i.customerName,
+    customerEmail: i.customerEmail,
+    lineItems: i.lineItems,
+    currency: i.currency,
+    taxRate: i.taxRate,
+    taxLabel: i.taxLabel,
+    taxAmount: i.taxAmount,
+    bankAccountName: c.bank.accountName,
+    bankAccountNumber: c.bank.accountNumber,
+    bankIfsc: c.bank.ifsc,
+    bankAccountType: c.bank.accountType,
+    bankName: c.bank.bankName,
+    paymentInstructions: c.invoice.paymentInstructions,
+    notes: i.notes,
+  });
+}
+
+function omitUndefined<T extends Record<string, unknown>>(obj: T): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v !== undefined) out[k] = v;
+  }
+  return out;
 }
 
 function addDays(date: Date, days: number): Date {

@@ -37,6 +37,16 @@ export const ConfigSchema = z.object({
     })
     .default({}),
 
+  bank: z
+    .object({
+      accountName: z.string().optional(),
+      accountNumber: z.string().optional(),
+      ifsc: z.string().optional(),
+      accountType: z.string().optional(),
+      bankName: z.string().optional(),
+    })
+    .default({}),
+
   smtp: z.object({
     host: z.string().min(1),
     port: z.number().int().positive(),

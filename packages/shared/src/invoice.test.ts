@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_FIELDS,
   renderInvoiceNumber,
   totalFor,
   hasCustomFields,
@@ -77,6 +78,58 @@ describe('totalFor', () => {
   it('handles missing lineItems gracefully', () => {
     const inv: Invoice = { ...baseInvoice, default: {} };
     expect(totalFor(inv)).toBe(0);
+  });
+});
+
+describe('DEFAULT_FIELDS', () => {
+  it('includes the original Phase-1 fields', () => {
+    const required = [
+      'invoiceNumber',
+      'issueDate',
+      'dueDate',
+      'fromName',
+      'fromEmail',
+      'customerName',
+      'customerEmail',
+      'lineItems',
+      'currency',
+      'notes',
+    ];
+    for (const f of required) expect(DEFAULT_FIELDS).toContain(f);
+  });
+
+  it('includes the Phase-4 company-snapshot fields', () => {
+    for (const f of [
+      'companyName',
+      'companyAddress',
+      'companyPhone',
+      'companyWebsite',
+      'companyTaxId',
+    ]) {
+      expect(DEFAULT_FIELDS).toContain(f);
+    }
+  });
+
+  it('includes the Phase-4 bank-snapshot fields', () => {
+    for (const f of [
+      'bankAccountName',
+      'bankAccountNumber',
+      'bankIfsc',
+      'bankAccountType',
+      'bankName',
+    ]) {
+      expect(DEFAULT_FIELDS).toContain(f);
+    }
+  });
+
+  it('includes the Phase-4 tax + payment fields', () => {
+    for (const f of ['taxRate', 'taxLabel', 'taxAmount', 'paymentInstructions', 'customerAddress']) {
+      expect(DEFAULT_FIELDS).toContain(f);
+    }
+  });
+
+  it('has no duplicate field names', () => {
+    expect(new Set(DEFAULT_FIELDS).size).toBe(DEFAULT_FIELDS.length);
   });
 });
 
