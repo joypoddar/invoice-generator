@@ -3,6 +3,8 @@ import { Command } from 'commander';
 import * as init from './commands/init.js';
 import * as whoami from './commands/whoami.js';
 import * as configCmd from './commands/config.js';
+import * as newCmd from './commands/new.js';
+import * as listCmd from './commands/list.js';
 
 const program = new Command();
 
@@ -11,21 +13,13 @@ program.name('invoice').description('Invoice generator').version('0.0.0');
 init.register(program);
 configCmd.register(program);
 whoami.register(program);
+newCmd.register(program);
+listCmd.register(program);
 
 const notYet = (name: string) => () => {
   console.error(`'invoice ${name}' is not yet implemented.`);
   process.exit(1);
 };
-
-program
-  .command('new')
-  .description('Create a new invoice (interactive)')
-  .action(notYet('new'));
-
-program
-  .command('list')
-  .description('List invoices from the local database')
-  .action(notYet('list'));
 
 program
   .command('send <id>')
