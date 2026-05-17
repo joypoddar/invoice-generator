@@ -1,29 +1,21 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S node --no-warnings=ExperimentalWarning
 import { Command } from 'commander';
+import * as init from './commands/init.js';
+import * as whoami from './commands/whoami.js';
+import * as configCmd from './commands/config.js';
 
 const program = new Command();
 
 program.name('invoice').description('Invoice generator').version('0.0.0');
 
+init.register(program);
+configCmd.register(program);
+whoami.register(program);
+
 const notYet = (name: string) => () => {
   console.error(`'invoice ${name}' is not yet implemented.`);
   process.exit(1);
 };
-
-program
-  .command('init')
-  .description('Interactive setup: SMTP/IMAP creds, folder picker, defaults')
-  .action(notYet('init'));
-
-program
-  .command('config <action> [args...]')
-  .description('get | set | unset | edit | validate | doctor')
-  .action(notYet('config'));
-
-program
-  .command('whoami')
-  .description('Show configured identity and folder scope')
-  .action(notYet('whoami'));
 
 program
   .command('new')
