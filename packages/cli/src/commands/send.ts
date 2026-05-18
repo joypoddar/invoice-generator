@@ -10,6 +10,7 @@ interface SendOptions {
   to?: string[];
   cc?: string[];
   bcc?: string[];
+  subject?: string;
   yes?: boolean;
 }
 
@@ -20,6 +21,10 @@ export function register(program: Command): void {
     .option('--to <email...>', 'override recipients (replaces config)')
     .option('--cc <email...>', 'override cc recipients')
     .option('--bcc <email...>', 'override bcc recipients')
+    .option(
+      '--subject <text>',
+      'override subject template for this send (placeholders: {invoiceNumber}, {customerName}, {total}, {currency}, {issueDate}, {dueDate})',
+    )
     .option('-y, --yes', 'skip the confirmation prompt')
     .action(runSend);
 }
@@ -73,26 +78,31 @@ async function runSend(id: string, opts: SendOptions): Promise<void> {
     }
   }
 
-  console.log('Sending…');
-  const renderOpts: RenderOpts = {
-    branding: config.branding,
-    dateFormat: config.invoice.dateFormat,
-    currencyFormat: config.invoice.currencyFormat,
-  };
-  await sendInvoice(
-    invoice,
-    recipients,
-    { host: config.smtp.host, port: config.smtp.port, user: config.smtp.user },
-    password,
-    renderOpts,
-  );
-
+  // Build the sent-state invoice BEFORE sending so the JSON sidecar attached
+  // to the email matches what we will write locally. If we sent the draft
+  // version, a future `invoice sync` would overwrite the locally-marked-sent
+  // row with the original draft state.
   const sentInvoice: Invoice = {
     ...invoice,
     status: 'sent',
     sentAt: new Date().toISOString(),
     recipients,
   };
+
+  console.log('Sending…');
+  const renderOpts: RenderOpts = {
+    branding: config.branding,
+    dateFormat: config.invoice.dateFormat,
+    currencyFormat: config.invoice.currencyFormat,
+    subjectTemplate: opts.subject ?? config.mail.subjectTemplate,
+  };
+  await sendInvoice(
+    sentInvoice,
+    recipients,
+    { host: config.smtp.host, port: config.smtp.port, user: config.smtp.user },
+    password,
+    renderOpts,
+  );
 
   const writeStore = new SqliteStore(dbPath());
   try {
@@ -101,7 +111,7 @@ async function runSend(id: string, opts: SendOptions): Promise<void> {
     writeStore.close();
   }
 
-  console.log(`Sent. ${String(invoice.default.invoiceNumber)} → ${recipients.to.join(', ')}`);
+  console.log(`Sent. ${String(sentInvoice.default.invoiceNumber)} → ${recipients.to.join(', ')}`);
 }
 
 function composeRecipients(

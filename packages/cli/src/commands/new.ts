@@ -27,8 +27,10 @@ async function runNew(): Promise<void> {
     config.invoice.nextSeq,
     today,
   );
+  const invoiceId = randomUUID();
 
-  console.log(`\nNew invoice: ${invoiceNumber} (id will be auto-generated)\n`);
+  console.log(`\nNew invoice: ${invoiceNumber}`);
+  console.log(`  id: ${invoiceId}\n`);
 
   const customerName = await input({ message: 'Customer name:', required: true });
   const customerEmail = await input({ message: 'Customer email:', default: '' });
@@ -74,7 +76,7 @@ async function runNew(): Promise<void> {
   const taxAmount = typeof taxRate === 'number' ? subtotal * taxRate : undefined;
 
   const invoice: Invoice = {
-    id: randomUUID(),
+    id: invoiceId,
     default: snapshotDefaults({
       invoiceNumber,
       issueDate,
