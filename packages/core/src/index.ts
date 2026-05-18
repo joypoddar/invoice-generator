@@ -21,3 +21,16 @@ export {
 } from './imap.js';
 
 export { ingest, parseSidecar, type IngestResult } from './ingest.js';
+
+export {
+  FREQUENCIES,
+  computeNextRun,
+  isFrequency,
+  materializeFromTemplate,
+  prepareClone,
+  templateFromInvoice,
+  type Frequency,
+  type RecurringInvoice,
+  type Template,
+  type MaterializeOverrides,
+} from './recurring.js';

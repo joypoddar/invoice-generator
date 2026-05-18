@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import type { Command } from 'commander';
 import { renderInvoiceNumber, totalFor, type Invoice } from '@invoice/shared';
-import { SqliteStore } from '@invoice/core';
+import { SqliteStore, prepareClone } from '@invoice/core';
 import { dbPath, loadConfigSafe, saveConfig } from '../store.js';
+
+export { prepareClone };
 
 export function register(program: Command): void {
   program
@@ -67,34 +69,6 @@ async function runClone(sourceId: string): Promise<void> {
   console.log(
     `\nReview with \`invoice list\`. Edit by hand if needed, then send with \`invoice send ${cloned.id}\`.`,
   );
-}
-
-interface CloneOverrides {
-  id: string;
-  invoiceNumber: string;
-  issueDate: string;
-  dueDate: string;
-}
-
-/**
- * Pure transform: take a source invoice and produce a fresh-draft copy with
- * the given identity/dates. Customer, line items, bank/company snapshot,
- * tax fields, notes, and custom fields are preserved verbatim. Send/payment
- * state is reset.
- */
-export function prepareClone(source: Invoice, overrides: CloneOverrides): Invoice {
-  return {
-    id: overrides.id,
-    default: {
-      ...source.default,
-      invoiceNumber: overrides.invoiceNumber,
-      issueDate: overrides.issueDate,
-      dueDate: overrides.dueDate,
-    },
-    custom: { ...source.custom },
-    status: 'draft',
-    paymentStatus: 'unpaid',
-  };
 }
 
 function addDays(date: Date, days: number): Date {

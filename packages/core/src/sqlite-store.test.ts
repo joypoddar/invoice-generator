@@ -168,4 +168,87 @@ describe('SqliteStore', () => {
     store.setLastUid(99);
     expect(store.getLastUid()).toBe(99);
   });
+
+  describe('recurring CRUD', () => {
+    const baseRec = {
+      id: 'rec-1',
+      name: 'monthly-acme',
+      sourceKind: 'invoice' as const,
+      sourceRef: 'invoice-uuid',
+      frequency: 'monthly' as const,
+      startDate: '2026-01-01',
+      nextRun: '2026-01-01',
+      createdAt: '2026-01-01T00:00:00Z',
+    };
+
+    it('create + get + list roundtrip', () => {
+      store.createRecurring(baseRec);
+      const fetched = store.getRecurring('monthly-acme');
+      expect(fetched).toEqual(baseRec);
+      expect(store.listRecurrings()).toHaveLength(1);
+    });
+
+    it('createRecurring rejects duplicate names', () => {
+      store.createRecurring(baseRec);
+      expect(() =>
+        store.createRecurring({ ...baseRec, id: 'rec-2' }),
+      ).toThrow();
+    });
+
+    it('listRecurrings returns sorted by name', () => {
+      store.createRecurring({ ...baseRec, id: 'a', name: 'aaa' });
+      store.createRecurring({ ...baseRec, id: 'z', name: 'zzz' });
+      store.createRecurring({ ...baseRec, id: 'm', name: 'mmm' });
+      expect(store.listRecurrings().map((r) => r.name)).toEqual(['aaa', 'mmm', 'zzz']);
+    });
+
+    it('deleteRecurring removes by name; returns true/false', () => {
+      store.createRecurring(baseRec);
+      expect(store.deleteRecurring('monthly-acme')).toBe(true);
+      expect(store.getRecurring('monthly-acme')).toBeNull();
+      expect(store.deleteRecurring('monthly-acme')).toBe(false);
+    });
+
+    it('updateRecurringRun advances next_run and last_run', () => {
+      store.createRecurring(baseRec);
+      store.updateRecurringRun('rec-1', '2026-02-01', '2026-01-05T10:00:00Z');
+      const fetched = store.getRecurring('monthly-acme');
+      expect(fetched?.nextRun).toBe('2026-02-01');
+      expect(fetched?.lastRun).toBe('2026-01-05T10:00:00Z');
+    });
+
+    it('findDueRecurrings returns only those with next_run <= asOf', () => {
+      store.createRecurring({ ...baseRec, id: 'past', name: 'past', nextRun: '2026-01-01' });
+      store.createRecurring({ ...baseRec, id: 'today', name: 'today', nextRun: '2026-05-17' });
+      store.createRecurring({ ...baseRec, id: 'future', name: 'future', nextRun: '2099-12-31' });
+      const due = store.findDueRecurrings('2026-05-17');
+      expect(due.map((r) => r.name).sort()).toEqual(['past', 'today']);
+    });
+
+    it('findDueRecurrings respects end_date', () => {
+      store.createRecurring({
+        ...baseRec,
+        id: 'ended',
+        name: 'ended',
+        nextRun: '2026-04-01',
+        endDate: '2026-03-31',
+      });
+      store.createRecurring({
+        ...baseRec,
+        id: 'active',
+        name: 'active',
+        nextRun: '2026-05-01',
+        endDate: '2099-12-31',
+      });
+      const due = store.findDueRecurrings('2026-06-01');
+      expect(due.map((r) => r.name)).toEqual(['active']);
+    });
+
+    it('stores endDate and lastRun as null when undefined', () => {
+      store.createRecurring(baseRec); // no endDate, no lastRun
+      const fetched = store.getRecurring('monthly-acme');
+      expect(fetched).not.toHaveProperty('endDate');
+      expect(fetched).not.toHaveProperty('lastRun');
+    });
+  });
 });

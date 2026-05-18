@@ -10,6 +10,7 @@ import * as syncCmd from './commands/sync.js';
 import * as markCmd from './commands/mark.js';
 import * as cloneCmd from './commands/clone.js';
 import * as templateCmd from './commands/template.js';
+import * as recurringCmd from './commands/recurring.js';
 
 const program = new Command();
 
@@ -25,6 +26,7 @@ syncCmd.register(program);
 markCmd.register(program);
 cloneCmd.register(program);
 templateCmd.register(program);
+recurringCmd.register(program);
 
 await program.parseAsync().catch((err: unknown) => {
   console.error(err instanceof Error ? err.message : err);

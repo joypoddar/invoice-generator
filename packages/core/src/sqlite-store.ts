@@ -9,6 +9,7 @@ import type {
   SortSpec,
   UpsertOptions,
 } from './store.js';
+import type { Frequency, RecurringInvoice } from './recurring.js';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS invoices (
@@ -35,11 +36,25 @@ CREATE TABLE IF NOT EXISTS sync_state (
   last_uid INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS recurring_invoices (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  source_kind TEXT NOT NULL CHECK (source_kind IN ('invoice','template')),
+  source_ref TEXT NOT NULL,
+  frequency TEXT NOT NULL CHECK (frequency IN ('daily','weekly','monthly','yearly')),
+  start_date TEXT NOT NULL,
+  end_date TEXT,
+  next_run TEXT NOT NULL,
+  last_run TEXT,
+  created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_invoices_due_date ON invoices(due_date);
 CREATE INDEX IF NOT EXISTS idx_invoices_from ON invoices(from_email);
 CREATE INDEX IF NOT EXISTS idx_invoices_customer ON invoices(customer_name);
 CREATE INDEX IF NOT EXISTS idx_invoices_payment ON invoices(payment_status);
 CREATE INDEX IF NOT EXISTS idx_invoices_has_custom ON invoices(has_custom_fields);
+CREATE INDEX IF NOT EXISTS idx_recurring_next_run ON recurring_invoices(next_run);
 `;
 
 const SORT_COLUMN: Record<SortField, string> = {
@@ -164,9 +179,101 @@ export class SqliteStore implements InvoiceStore {
       .run({ uid });
   }
 
+  // ───── Recurring invoices ─────
+
+  createRecurring(rec: RecurringInvoice): void {
+    this.db
+      .prepare(
+        `INSERT INTO recurring_invoices
+         (id, name, source_kind, source_ref, frequency, start_date, end_date, next_run, last_run, created_at)
+         VALUES (:id, :name, :source_kind, :source_ref, :frequency, :start_date, :end_date, :next_run, :last_run, :created_at)`,
+      )
+      .run({
+        id: rec.id,
+        name: rec.name,
+        source_kind: rec.sourceKind,
+        source_ref: rec.sourceRef,
+        frequency: rec.frequency,
+        start_date: rec.startDate,
+        end_date: rec.endDate ?? null,
+        next_run: rec.nextRun,
+        last_run: rec.lastRun ?? null,
+        created_at: rec.createdAt,
+      });
+  }
+
+  listRecurrings(): RecurringInvoice[] {
+    const rows = this.db
+      .prepare('SELECT * FROM recurring_invoices ORDER BY name ASC')
+      .all() as unknown as RecurringRow[];
+    return rows.map(rowToRecurring);
+  }
+
+  getRecurring(name: string): RecurringInvoice | null {
+    const row = this.db
+      .prepare('SELECT * FROM recurring_invoices WHERE name = ?')
+      .get(name) as unknown as RecurringRow | undefined;
+    return row ? rowToRecurring(row) : null;
+  }
+
+  deleteRecurring(name: string): boolean {
+    const result = this.db.prepare('DELETE FROM recurring_invoices WHERE name = ?').run(name);
+    return result.changes > 0;
+  }
+
+  updateRecurringRun(id: string, nextRun: string, lastRun: string): void {
+    this.db
+      .prepare(
+        'UPDATE recurring_invoices SET next_run = :next, last_run = :last WHERE id = :id',
+      )
+      .run({ next: nextRun, last: lastRun, id });
+  }
+
+  /** Recurrings whose next_run is on or before the given ISO date AND not past end_date. */
+  findDueRecurrings(asOf: string): RecurringInvoice[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM recurring_invoices
+         WHERE next_run <= :asOf
+           AND (end_date IS NULL OR next_run <= end_date)
+         ORDER BY next_run ASC, name ASC`,
+      )
+      .all({ asOf }) as unknown as RecurringRow[];
+    return rows.map(rowToRecurring);
+  }
+
   close(): void {
     this.db.close();
   }
+}
+
+interface RecurringRow {
+  id: string;
+  name: string;
+  source_kind: 'invoice' | 'template';
+  source_ref: string;
+  frequency: Frequency;
+  start_date: string;
+  end_date: string | null;
+  next_run: string;
+  last_run: string | null;
+  created_at: string;
+}
+
+function rowToRecurring(row: RecurringRow): RecurringInvoice {
+  const rec: RecurringInvoice = {
+    id: row.id,
+    name: row.name,
+    sourceKind: row.source_kind,
+    sourceRef: row.source_ref,
+    frequency: row.frequency,
+    startDate: row.start_date,
+    nextRun: row.next_run,
+    createdAt: row.created_at,
+  };
+  if (row.end_date !== null) rec.endDate = row.end_date;
+  if (row.last_run !== null) rec.lastRun = row.last_run;
+  return rec;
 }
 
 function optionalString(v: unknown): string | null {
