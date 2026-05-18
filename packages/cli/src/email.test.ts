@@ -62,6 +62,23 @@ describe('buildMailOptions', () => {
     expect(opts.html).toContain('#ff00ff');
   });
 
+  it('applies subjectTemplate when provided', () => {
+    const opts = buildMailOptions(makeInvoice(), recipients, from, {
+      subjectTemplate: 'Creowis | {invoiceNumber} for {customerName}',
+    });
+    expect(opts.subject).toBe('Creowis | INV-2026-0042 for Acme');
+  });
+
+  it('falls back to subjectFor when subjectTemplate is not provided', () => {
+    const opts = buildMailOptions(makeInvoice(), recipients, from);
+    expect(opts.subject).toMatch(/^\[Invoice\] INV-2026-0042/);
+  });
+
+  it('empty-string subjectTemplate falls back to default (treats empty as unset)', () => {
+    const opts = buildMailOptions(makeInvoice(), recipients, from, { subjectTemplate: '' });
+    expect(opts.subject).toMatch(/^\[Invoice\] INV-2026-0042/);
+  });
+
   it('sets to/cc/bcc as comma-joined strings', () => {
     const opts = buildMailOptions(
       makeInvoice(),
@@ -204,6 +221,33 @@ describe('renderInvoiceHtml', () => {
   it('does not render Payment Instructions block when unset', () => {
     const html = renderInvoiceHtml(makeInvoice());
     expect(html).not.toContain('Payment Instructions');
+  });
+
+  describe('print CSS', () => {
+    it('includes an @page rule for A4', () => {
+      const html = renderInvoiceHtml(makeInvoice());
+      expect(html).toMatch(/@page\s*\{[^}]*size:\s*A4/);
+    });
+
+    it('includes an @media print block', () => {
+      const html = renderInvoiceHtml(makeInvoice());
+      expect(html).toMatch(/@media\s+print\s*\{/);
+    });
+
+    it('includes page-break-inside: avoid for table rows', () => {
+      const html = renderInvoiceHtml(makeInvoice());
+      expect(html).toContain('page-break-inside');
+    });
+
+    it('tags the outer card with class="invoice-card" for print targeting', () => {
+      const html = renderInvoiceHtml(makeInvoice());
+      expect(html).toContain('class="invoice-card"');
+    });
+
+    it('exposes a .no-print class for dashboard UI chrome (Phase 5)', () => {
+      const html = renderInvoiceHtml(makeInvoice());
+      expect(html).toContain('.no-print');
+    });
   });
 
   it('reads customer address from default first, custom legacy second', () => {

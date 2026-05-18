@@ -3,6 +3,7 @@ import {
   INVOICE_HEADER_NAME,
   INVOICE_HEADER_VALUE,
   hasCustomFields,
+  renderSubject,
   sidecarFilenameFor,
   subjectFor,
   totalFor,
@@ -40,6 +41,12 @@ export interface RenderOpts {
   branding?: BrandingOpts;
   dateFormat?: string;
   currencyFormat?: string;
+  /**
+   * If set, used as the email subject after placeholder substitution.
+   * Placeholders: {invoiceNumber}, {customerName}, {total}, {currency},
+   * {issueDate}, {dueDate}. Falls back to subjectFor(invoice) when undefined.
+   */
+  subjectTemplate?: string;
 }
 
 const DEFAULT_PRIMARY_COLOR = '#3949ab';
@@ -52,10 +59,13 @@ export function buildMailOptions(
   opts: RenderOpts = {},
 ): SendMailOptions {
   const filename = sidecarFilenameFor(String(invoice.default.invoiceNumber));
+  const subject = opts.subjectTemplate
+    ? renderSubject(opts.subjectTemplate, invoice)
+    : subjectFor(invoice);
   const result: SendMailOptions = {
     from: fromAddress,
     to: recipients.to.join(', '),
-    subject: subjectFor(invoice),
+    subject,
     html: renderInvoiceHtml(invoice, opts),
     attachments: [
       {
@@ -216,10 +226,23 @@ export function renderInvoiceHtml(invoice: Invoice, opts: RenderOpts = {}): stri
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Invoice ${escapeHtml(String(def.invoiceNumber))}</title>
+  <style>
+    /* Print rules. Inline styles above keep the email rendering intact in
+       clients that strip <style>; these only kick in for window.print(). */
+    @page { size: A4; margin: 1.5cm; }
+    @media print {
+      html, body { background: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; color-adjust: exact; }
+      body { padding: 0 !important; }
+      .invoice-card { box-shadow: none !important; border-radius: 0 !important; padding: 0 !important; max-width: 100% !important; margin: 0 !important; }
+      table, tr, td, th { page-break-inside: avoid; }
+      h1, h2, h3 { page-break-after: avoid; }
+      .no-print { display: none !important; }
+    }
+  </style>
 </head>
 <body style="margin:0; padding:32px 16px; background:#f4f6fb; font-family: ${fontFamily};">
 
-  <div style="max-width:680px; margin:0 auto; background:#fff; border-radius:10px;
+  <div class="invoice-card" style="max-width:680px; margin:0 auto; background:#fff; border-radius:10px;
               padding:40px 40px 36px; box-shadow:0 2px 16px rgba(57,73,171,0.08);">
 
     <!-- ── Title ── -->
