@@ -47,17 +47,41 @@ invoice-generator/
 
 ## Phase status
 
-The plan lays out 9 phases. **Phase 1 (CLI MVP) is complete** — the `invoice` binary builds, ships, and exercises the full Phase-1 command surface (`init / config / whoami / new / list / send / sync / mark`). **50 unit tests** pass across `shared/invoice`, `shared/config-schema`, `core/sqlite-store`, `core/ingest`, and `cli/email`. The manual end-to-end verification against a real mail account (PLAN.md § "Verification" steps 1–11) is the one remaining item before Phase 2 starts in earnest.
+The plan lays out 9 phases. **Phases 1 and 4 are complete** — the `invoice` binary ships:
 
-**Active phase: Phase 2 (CLI productivity)** — `invoice list` filter flags, `invoice mark` (done early in Phase 1), `invoice export csv`, `invoice preview`, `invoice sync --backfill / --since`, full `core/csv.ts` and richer `core/queries.ts`. See PLAN.md § "Execution phases" → Phase 2 for the precise scope.
+- **Phase 1 (CLI MVP)** — `init / config / whoami / new / list / send / sync / mark`.
+- **Phase 4 (Customer-facing invoice + recurring billing)** — branding-driven HTML rendering matching the Creowis design, `Intl`-based date/currency formatting, print CSS, customizable subject line, `invoice clone`, `invoice template (save/list/use/delete)`, `invoice recurring (create/list/show/delete/generate/schedule-help)`.
 
-Notable Phase-1 deviations from the plan (already in code; flag if you change them):
+**155 unit tests** pass across `shared` (`invoice`, `config-schema`, `email-format`), `core` (`sqlite-store`, `ingest`, `recurring`), and `cli` (`email`, `format`, `clone`, `templates`). Manual end-to-end verification (PLAN.md § "Verification" + `TESTING.md` § "Phase 4 verification") is the remaining item before Phase 5 starts in earnest.
 
-- **`node:sqlite` instead of `better-sqlite3`** — the Linux box this runs on has no C compiler and Node 24 has no published better-sqlite3 prebuilds. `node:sqlite` is built into Node 22+. Tests already cover the seam.
+**Active phase: Phase 5 (Hono dashboard MVP)** — local server bound to `127.0.0.1`, server-rendered JSX, vanilla-JS sync/paid-toggle, no Next.js, no bundler. See PLAN.md § "Execution phases" → Phase 5 for the precise scope. **Phase 2 (CLI productivity — filter flags, CSV export, preview)** is still open and can land in parallel.
+
+### Phase-1 deviations (already in code; flag if you change them)
+
+- **`node:sqlite` instead of `better-sqlite3`** — the Linux box this runs on has no C compiler and Node 24 has no published better-sqlite3 prebuilds. `node:sqlite` is built into Node 22+. Tests cover the seam.
 - **`mail.*` instead of `email.*`** for the email-send config namespace — the plan implicitly conflated the top-level `email` (user's address, a string) with `email.recipients` (an object). They are now distinct: `email` is the string identity, `mail.recipients.{to,cc,bcc}` is the recipe.
 - **`message_uid` nullable** in the SQLite schema (plan had it `UNIQUE NOT NULL`). Drafts created via `invoice new` exist before any IMAP UID is assigned; `NOT NULL` would block that. Still `UNIQUE` to dedupe across syncs, and the upsert `COALESCE`s the column so once set it's preserved.
-- **`local.db` is created at default umask `0644`**, not `0600`. The parent dir is `0700` so this isn't reachable by other local users, but Phase 3 polish should chmod the DB file after creation.
-- **Shebang trick for the SQLite experimental warning** — `#!/usr/bin/env -S node --no-warnings=ExperimentalWarning`. Works when the bin is invoked via the shebang (e.g. after `pnpm link`); explicit `node dist/index.js` invocations will still show the warning since they bypass the shebang.
+- **`local.db` is created at default umask `0644`**, not `0600`. The parent dir is `0700` so this isn't reachable by other local users; Phase 3 polish should chmod the DB file after creation.
+- **Shebang trick for the SQLite experimental warning** — `#!/usr/bin/env -S node --no-warnings=ExperimentalWarning`. Works when the bin is invoked via the shebang (e.g. after `pnpm link`); explicit `node dist/index.js` invocations still show the warning since they bypass the shebang.
+
+### Phase-3.5 fixes (mid-Phase-4 bug triage)
+
+- **Sidecar status drift fixed.** `send.ts` now builds the `sentInvoice` (status=`sent`, sentAt=now, recipients=…) BEFORE calling `sendInvoice`, so the JSON attached to the email matches what we write locally. Re-sync no longer overwrites the locally-marked-sent row with the original draft state.
+- **Sync count semantics.** `ingest()` now returns `{ fetchedCount, newCount, newLastUid }` and reports both: `"Processed 1 invoice(s) (0 new, 1 re-ingested). Watermark: uid 223."`. The "0 new" is now meaningful.
+- **`invoice new` prints the id upfront** so it's visible after a long line-item loop.
+
+### Phase-4 deviations (already in code; flag if you change them)
+
+- **`DEFAULT_FIELDS` expanded from 10 → 25 entries** to include company snapshot (`companyName/Address/Phone/Website/TaxId`), customer extras (`customerAddress`), bank snapshot (`bankAccountName/Number/Ifsc/Type/Name`), tax (`taxRate/Label/Amount`), and `paymentInstructions`. `invoice new` silently snapshots these from `config.company.*`, `config.bank.*`, `config.invoice.{defaultTaxRate, taxLabel, paymentInstructions}` at creation time. Renderer reads `invoice.default.X` first, falls back to `invoice.custom.X` (legacy keys: `fromPhone` → `companyPhone`).
+- **`config.bank.*` added** to the Zod schema — `{ accountName, accountNumber, ifsc, accountType, bankName }`, all optional.
+- **Pure transforms (`prepareClone`, `templateFromInvoice`, `materializeFromTemplate`) moved from `cli/` into `core/src/recurring.ts`** so both the CLI clone/template commands and the recurring engine share them. CLI files re-export for compat.
+- **Recurring storage methods live on `SqliteStore`, not on `InvoiceStore` interface** — same pattern as `getLastUid/setLastUid`. If a `PostgresStore` ships in Phase 8, it'll add the same methods at the impl level.
+- **`mail.subjectTemplate` promoted from Phase 5 to Phase 4** with six placeholders: `{invoiceNumber}`, `{customerName}`, `{total}`, `{currency}`, `{issueDate}`, `{dueDate}`. `invoice send --subject "..."` overrides per send. Empty template = use built-in default.
+- **`computeNextRun` uses JS Date semantics** — Jan 31 + 1 month rolls to Mar 3, Feb 29 + 1 year rolls to Mar 1. Documented as v1 behavior; if precise EOM semantics are needed later, swap to a date library or hand-roll.
+- **`schedule-help` is print-only** — never invokes `crontab`/`launchctl`/`schtasks`. Outputs platform-appropriate snippets and exits.
+- **Logo deferred to Phase 5** — `branding.logoUrl` is in the schema but the renderer ignores it.
+- **`invoice config.cli.openPdfAfterPreview` config key name** is from the v1 plan and now misleading (no PDFs). Phase 3 polish should rename to `cli.openBrowserAfterPreview` once Phase 5 wires the dashboard URL.
+- **Test files included in tsconfig** (no longer in `exclude`) so the IDE's TS server applies the project's types when typechecking test files. Side effect: `dist/` contains `.test.js`/`.test.d.ts` — harmless (the package exports field only exposes `./` → `./dist/index.js`).
 
 When you complete a phase, update this section so the next session knows where things stand.
 
