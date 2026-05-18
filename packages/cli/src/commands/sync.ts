@@ -48,10 +48,14 @@ async function runSync(opts: SyncOptions): Promise<void> {
     );
     try {
       const result = await ingest(store, client, config.imap.folder, lastUid);
-      if (result.newLastUid > store.getLastUid()) {
+      if (result.newLastUid > lastUid) {
         store.setLastUid(result.newLastUid);
       }
-      console.log(`Synced ${result.syncedCount} new invoice(s). Watermark: uid ${result.newLastUid}.`);
+      const detail =
+        result.fetchedCount === result.newCount
+          ? `${result.newCount} new`
+          : `${result.newCount} new, ${result.fetchedCount - result.newCount} re-ingested`;
+      console.log(`Processed ${result.fetchedCount} invoice(s) (${detail}). Watermark: uid ${result.newLastUid}.`);
     } finally {
       try {
         await client.logout();
