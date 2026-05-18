@@ -102,11 +102,12 @@ describe('parseSidecar', () => {
 });
 
 describe('ingest', () => {
-  it('returns zero count and unchanged lastUid for empty inbox', async () => {
+  it('returns zero counts and unchanged lastUid for empty inbox', async () => {
     const store = new SqliteStore(':memory:');
     const client = createMockClient([]);
     const result = await ingest(store, client, 'Sent', 0);
-    expect(result.syncedCount).toBe(0);
+    expect(result.fetchedCount).toBe(0);
+    expect(result.newCount).toBe(0);
     expect(result.newLastUid).toBe(0);
     store.close();
   });
@@ -119,7 +120,8 @@ describe('ingest', () => {
 
     const result = await ingest(store, client, 'Sent', 0);
 
-    expect(result.syncedCount).toBe(2);
+    expect(result.fetchedCount).toBe(2);
+    expect(result.newCount).toBe(2);
     expect(result.newLastUid).toBe(101);
     expect(await store.count()).toBe(2);
     expect(await store.get(inv1.id)).toEqual(inv1);
@@ -138,9 +140,28 @@ describe('ingest', () => {
 
     const result = await ingest(store, client, 'Sent', 0);
 
-    expect(result.syncedCount).toBe(1);
+    expect(result.fetchedCount).toBe(1);
+    expect(result.newCount).toBe(1);
     // newLastUid should not advance past skipped messages (we never confirmed them)
     expect(result.newLastUid).toBe(50);
+    expect(await store.count()).toBe(1);
+    store.close();
+  });
+
+  it('counts re-ingested rows as fetched but not new (e.g. --backfill)', async () => {
+    const store = new SqliteStore(':memory:');
+    const inv = makeInvoice();
+    const client = createMockClient([makeMessage(200, inv)]);
+
+    const first = await ingest(store, client, 'Sent', 0);
+    expect(first.fetchedCount).toBe(1);
+    expect(first.newCount).toBe(1);
+
+    // Re-run with lastUid=0 (simulates --backfill on an existing DB)
+    const second = await ingest(store, client, 'Sent', 0);
+    expect(second.fetchedCount).toBe(1);
+    expect(second.newCount).toBe(0);
+
     expect(await store.count()).toBe(1);
     store.close();
   });

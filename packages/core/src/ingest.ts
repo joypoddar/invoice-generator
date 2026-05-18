@@ -7,7 +7,11 @@ import type { ImapFlow } from 'imapflow';
 const SIDECAR_FILENAME_RE = /^invoice-.+\.json$/i;
 
 export interface IngestResult {
-  syncedCount: number;
+  /** Number of messages fetched + parsed (includes re-upserts on --backfill). */
+  fetchedCount: number;
+  /** Number of invoices that did not previously exist in the store. */
+  newCount: number;
+  /** Highest IMAP UID seen during this sync; the watermark for next time. */
   newLastUid: number;
 }
 
@@ -21,18 +25,21 @@ export async function ingest(
   folder: string,
   lastUid: number,
 ): Promise<IngestResult> {
-  let syncedCount = 0;
+  let fetchedCount = 0;
+  let newCount = 0;
   let newLastUid = lastUid;
 
   for await (const msg of fetchSince(client, folder, lastUid)) {
     const invoice = await parseSidecar(msg);
     if (!invoice) continue;
+    const existing = await store.get(invoice.id);
     await store.upsert(invoice, { messageUid: String(msg.uid) });
-    syncedCount++;
+    fetchedCount++;
+    if (!existing) newCount++;
     if (msg.uid > newLastUid) newLastUid = msg.uid;
   }
 
-  return { syncedCount, newLastUid };
+  return { fetchedCount, newCount, newLastUid };
 }
 
 /**
