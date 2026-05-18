@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { realpathSync } from 'node:fs';
+import { platform } from 'node:os';
 import type { Command } from 'commander';
 import { confirm, input, select } from '@inquirer/prompts';
 import { renderInvoiceNumber, totalFor, type Invoice } from '@invoice/shared';
@@ -47,6 +49,13 @@ export function register(program: Command): void {
     .description('Generate drafts for all recurrings whose next_run is on or before today')
     .option('--dry-run', 'print what would happen without writing')
     .action(runGenerate);
+
+  cmd
+    .command('schedule-help')
+    .description(
+      'Print OS-specific scheduling instructions (cron / launchd / Task Scheduler). Print-only — never installs.',
+    )
+    .action(runScheduleHelp);
 }
 
 async function runCreate(): Promise<void> {
@@ -312,6 +321,157 @@ async function buildInvoice(
     throw new Error(`Recurring "${rec.name}" template "${rec.sourceRef}" failed to load`);
   }
   return materializeFromTemplate(template, overrides);
+}
+
+function runScheduleHelp(): void {
+  const bin = resolveBinPath();
+  const os = platform();
+  const cmd = `${bin} recurring generate`;
+  const log = '$HOME/.invoice/recurring.log';
+  const cronLine = `5 9 * * * ${cmd} >> ${log} 2>&1`;
+
+  console.log(`# Scheduling \`invoice recurring generate\``);
+  console.log(`#`);
+  console.log(
+    `# This binary doesn't run a daemon. To get auto-generation, wire \`invoice recurring`,
+  );
+  console.log(
+    `# generate\` into your OS scheduler. The snippet below runs once a day at 9:05 AM`,
+  );
+  console.log(`# and appends output to ~/.invoice/recurring.log.`);
+  console.log(`#`);
+  console.log(
+    `# Generation always creates DRAFTS. \`invoice send <id>\` stays explicit so you`,
+  );
+  console.log(`# can review before any invoice goes out.`);
+  console.log('');
+
+  if (os === 'darwin') {
+    printCron(cronLine);
+    console.log('');
+    printLaunchd(cmd, log);
+  } else if (os === 'win32') {
+    printSchtasks(cmd);
+  } else {
+    // Linux + everything else
+    printCron(cronLine);
+    console.log('');
+    printSystemdTimer(cmd, log);
+  }
+}
+
+function printCron(line: string): void {
+  console.log('## Option: cron (Linux / macOS)');
+  console.log('');
+  console.log('1. Open your crontab:');
+  console.log('     crontab -e');
+  console.log('');
+  console.log('2. Paste this line at the bottom (uses $HOME so it works for any user):');
+  console.log('');
+  console.log(`   ${line}`);
+  console.log('');
+  console.log('3. Save and exit. Verify with `crontab -l`.');
+}
+
+function printLaunchd(cmd: string, log: string): void {
+  console.log('## Option: launchd (macOS — modern alternative to cron)');
+  console.log('');
+  console.log(
+    'Create `~/Library/LaunchAgents/com.creowis.invoice.recurring.plist` with:',
+  );
+  console.log('');
+  const [program, ...args] = cmd.split(' ');
+  const argsXml = args
+    .map((a) => `      <string>${escapeXml(a)}</string>`)
+    .join('\n');
+  console.log(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key><string>com.creowis.invoice.recurring</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>${escapeXml(program ?? 'invoice')}</string>
+${argsXml}
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+      <key>Hour</key><integer>9</integer>
+      <key>Minute</key><integer>5</integer>
+    </dict>
+    <key>StandardOutPath</key><string>${log.replace('$HOME', '/Users/YOUR_USER')}</string>
+    <key>StandardErrorPath</key><string>${log.replace('$HOME', '/Users/YOUR_USER')}</string>
+  </dict>
+</plist>`);
+  console.log('');
+  console.log('Then load:');
+  console.log('     launchctl load ~/Library/LaunchAgents/com.creowis.invoice.recurring.plist');
+}
+
+function printSystemdTimer(cmd: string, log: string): void {
+  console.log('## Option: systemd user timer (Linux — modern alternative to cron)');
+  console.log('');
+  console.log('Create `~/.config/systemd/user/invoice-recurring.service`:');
+  console.log('');
+  console.log(`[Unit]
+Description=Generate due recurring invoice drafts
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c '${cmd} >> ${log} 2>&1'`);
+  console.log('');
+  console.log('Create `~/.config/systemd/user/invoice-recurring.timer`:');
+  console.log('');
+  console.log(`[Unit]
+Description=Run invoice-recurring daily at 09:05
+
+[Timer]
+OnCalendar=*-*-* 09:05:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target`);
+  console.log('');
+  console.log('Then enable + start:');
+  console.log('     systemctl --user daemon-reload');
+  console.log('     systemctl --user enable --now invoice-recurring.timer');
+}
+
+function printSchtasks(cmd: string): void {
+  console.log('## Option: Task Scheduler (Windows)');
+  console.log('');
+  console.log('From PowerShell (one-time setup):');
+  console.log('');
+  console.log(`     schtasks /Create /SC DAILY /TN "InvoiceRecurring" \\
+       /TR "${cmd}" /ST 09:05`);
+  console.log('');
+  console.log('Verify:');
+  console.log('     schtasks /Query /TN "InvoiceRecurring"');
+  console.log('');
+  console.log('Remove:');
+  console.log('     schtasks /Delete /TN "InvoiceRecurring" /F');
+}
+
+function resolveBinPath(): string {
+  // process.argv[1] is the path used to invoke this command. Resolve symlinks
+  // so the cron entry survives pnpm re-links.
+  const arg = process.argv[1];
+  if (!arg) return 'invoice';
+  try {
+    return realpathSync(arg);
+  } catch {
+    return arg;
+  }
+}
+
+function escapeXml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
 }
 
 function renderTable(headers: string[], rows: string[][]): string {
