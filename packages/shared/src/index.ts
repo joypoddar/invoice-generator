@@ -12,6 +12,7 @@ export {
   INVOICE_HEADER_NAME,
   INVOICE_HEADER_VALUE,
   subjectFor,
+  renderSubject,
   sidecarFilenameFor,
 } from './email-format.js';
 

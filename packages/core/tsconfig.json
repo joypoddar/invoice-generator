@@ -6,6 +6,6 @@
     "types": ["node"]
   },
   "include": ["src/**/*"],
-  "exclude": ["src/**/*.test.ts", "dist"],
+  "exclude": ["dist"],
   "references": [{ "path": "../shared" }]
 }
