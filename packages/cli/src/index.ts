@@ -9,6 +9,7 @@ import * as sendCmd from './commands/send.js';
 import * as syncCmd from './commands/sync.js';
 import * as markCmd from './commands/mark.js';
 import * as cloneCmd from './commands/clone.js';
+import * as templateCmd from './commands/template.js';
 
 const program = new Command();
 
@@ -23,6 +24,7 @@ sendCmd.register(program);
 syncCmd.register(program);
 markCmd.register(program);
 cloneCmd.register(program);
+templateCmd.register(program);
 
 await program.parseAsync().catch((err: unknown) => {
   console.error(err instanceof Error ? err.message : err);

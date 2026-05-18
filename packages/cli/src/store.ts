@@ -3,21 +3,28 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { ConfigSchema, type Config } from '@invoice/shared';
 
-export const INVOICE_DIR = process.env.INVOICE_HOME ?? join(homedir(), '.invoice');
+/**
+ * Resolves the data directory each call so tests (and the verification
+ * script) can override via INVOICE_HOME after process start.
+ */
+export function invoiceDir(): string {
+  return process.env.INVOICE_HOME ?? join(homedir(), '.invoice');
+}
 
 export function configPath(): string {
-  return join(INVOICE_DIR, 'config.json');
+  return join(invoiceDir(), 'config.json');
 }
 
 export function dbPath(): string {
-  return join(INVOICE_DIR, 'local.db');
+  return join(invoiceDir(), 'local.db');
 }
 
 export function ensureInvoiceDir(): void {
-  if (!existsSync(INVOICE_DIR)) {
-    mkdirSync(INVOICE_DIR, { recursive: true, mode: 0o700 });
+  const dir = invoiceDir();
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
   } else {
-    chmodSync(INVOICE_DIR, 0o700);
+    chmodSync(dir, 0o700);
   }
 }
 
