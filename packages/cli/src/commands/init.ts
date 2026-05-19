@@ -23,17 +23,32 @@ async function runInit(): Promise<void> {
   const existing = loadConfigSafe();
   if (existing) console.log('Existing config found — press Enter to keep current values.\n');
 
+  // 1. Identity
   const name = await input({ message: 'Your name:', default: existing?.name, required: true });
   const email = await input({ message: 'Your email:', default: existing?.email, required: true });
   const currency = await input({
     message: 'Default currency (3-letter ISO code):',
     default: existing?.currency ?? 'INR',
   });
-  const numberFormat = await input({
-    message: 'Invoice number format (use {SEQ}/{YYYY}/{MM}/{DD}):',
-    default: existing?.invoice.numberFormat ?? 'INV-{YYYY}-{SEQ}',
-  });
 
+  // 2. Company info (optional). Captures company.name early so the number
+  // format prompt below can suggest {COMPANY3}-... when set.
+  let companySection: Config['company'] | undefined = existing?.company;
+  const wantsCompany = await confirm({
+    message: 'Set up company info now? (used in the Billed By section)',
+    default: !existing?.company?.name,
+  });
+  if (wantsCompany) {
+    companySection = await setupCompany(existing?.company);
+  }
+
+  // 3. Invoice number format (uses company name for the suggested default)
+  const numberFormat = await setupNumberFormat(
+    existing?.invoice.numberFormat ?? '',
+    companySection?.name,
+  );
+
+  // 4. SMTP
   console.log('\n--- SMTP (sending) ---');
   const smtpHost = await input({
     message: 'SMTP host:',
@@ -68,6 +83,7 @@ async function runInit(): Promise<void> {
     transporter.close();
   }
 
+  // 5. IMAP
   console.log('\n--- IMAP (sync) ---');
   const imapHost = await input({
     message: 'IMAP host:',
@@ -113,6 +129,7 @@ async function runInit(): Promise<void> {
   }
   console.log(`IMAP OK. Folder: ${folder}`);
 
+  // 6. Default recipients
   console.log('\n--- Default recipients ---');
   const toCsv = await input({
     message: "Default 'to' (comma-separated email addresses):",
@@ -123,15 +140,94 @@ async function runInit(): Promise<void> {
     .map((s) => s.trim())
     .filter(Boolean);
 
-  const merged = mergeConfig(existing, {
+  // 7. Optional sections — each gated on (y/N). Defaults to "yes" when no
+  // value exists, "no" otherwise so re-running init doesn't make you re-walk
+  // already-set sections.
+  console.log(
+    '\n--- Optional setup (skippable — you can run any of these later via `invoice setup <section>`) ---',
+  );
+
+  let bankSection: Config['bank'] | undefined = existing?.bank;
+  if (
+    await confirm({
+      message: 'Set up bank details now?',
+      default: !existing?.bank?.accountNumber,
+    })
+  ) {
+    bankSection = await setupBank(existing?.bank);
+  }
+
+  let taxSection: TaxSection | undefined;
+  if (
+    await confirm({
+      message: 'Set up tax & payment defaults now?',
+      default: existing?.invoice.defaultTaxRate === undefined,
+    })
+  ) {
+    taxSection = await setupTax({
+      defaultTaxRate: existing?.invoice.defaultTaxRate,
+      taxLabel: existing?.invoice.taxLabel,
+      paymentInstructions: existing?.invoice.paymentInstructions,
+    });
+  }
+
+  let mailExtras: Partial<Config['mail']> | undefined;
+  if (
+    await confirm({
+      message: 'Set up mail (subject template, body template, reply-to) now?',
+      default: !existing?.mail.subjectTemplate,
+    })
+  ) {
+    const result = await setupMail({
+      ...(existing?.mail ?? { recipients: { to: toList, cc: [], bcc: [] } }),
+    });
+    const { recipients: _recipients, ...rest } = result;
+    mailExtras = rest;
+  }
+
+  let brandingSection: Config['branding'] | undefined = existing?.branding;
+  if (
+    await confirm({
+      message: 'Set up branding & signature now?',
+      default: !existing?.branding?.primaryColor,
+    })
+  ) {
+    brandingSection = await setupBranding(existing?.branding);
+  }
+
+  let lineItemHeader: string | undefined;
+  if (
+    await confirm({
+      message: 'Set the line-item column header? (default "Description")',
+      default: false,
+    })
+  ) {
+    lineItemHeader = await setupLineItemHeader(existing?.invoice.lineItemHeader);
+  }
+
+  // Merge everything into a fresh config object and validate
+  const merged: Record<string, unknown> = {
+    ...(existing as unknown as Record<string, unknown> | undefined),
     name,
     email,
     currency,
-    numberFormat,
     smtp: { host: smtpHost, port: smtpPort, user: smtpUser },
     imap: { host: imapHost, port: imapPort, user: imapUser, folder },
-    recipientsTo: toList,
-  });
+    mail: {
+      ...(existing?.mail ?? {}),
+      ...(mailExtras ?? {}),
+      recipients: { ...(existing?.mail.recipients ?? {}), to: toList },
+    },
+    company: companySection ?? existing?.company ?? {},
+    bank: bankSection ?? existing?.bank ?? {},
+    branding: brandingSection ?? existing?.branding ?? {},
+    invoice: {
+      ...(existing?.invoice ?? {}),
+      numberFormat,
+      ...(taxSection ?? {}),
+      ...(lineItemHeader !== undefined ? { lineItemHeader } : {}),
+    },
+  };
   const config = ConfigSchema.parse(merged);
 
   saveConfig(config);
@@ -149,33 +245,6 @@ function specialRank(use?: string): number {
   if (use === '\\Sent') return 0;
   if (use === '\\Inbox') return 1;
   return 9;
-}
-
-interface InitInputs {
-  name: string;
-  email: string;
-  currency: string;
-  numberFormat: string;
-  smtp: { host: string; port: number; user: string };
-  imap: { host: string; port: number; user: string; folder: string };
-  recipientsTo: string[];
-}
-
-function mergeConfig(existing: Config | null, inputs: InitInputs): unknown {
-  const base = (existing as unknown as Record<string, unknown>) ?? {};
-  return {
-    ...base,
-    name: inputs.name,
-    email: inputs.email,
-    currency: inputs.currency,
-    invoice: { ...(existing?.invoice ?? {}), numberFormat: inputs.numberFormat },
-    smtp: inputs.smtp,
-    imap: inputs.imap,
-    mail: {
-      ...(existing?.mail ?? {}),
-      recipients: { ...(existing?.mail.recipients ?? {}), to: inputs.recipientsTo },
-    },
-  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -361,6 +430,3 @@ export async function setupNumberFormat(existing: string, companyName?: string):
   });
 }
 
-// Suppress unused-import lint for `confirm` while keeping the import for future
-// use (Phase 4.6 wires it into the optional-sections gates).
-void confirm;
