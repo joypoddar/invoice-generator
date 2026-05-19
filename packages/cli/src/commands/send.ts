@@ -91,7 +91,10 @@ async function runSend(id: string, opts: SendOptions): Promise<void> {
 
   console.log('Sending…');
   const renderOpts: RenderOpts = {
-    branding: config.branding,
+    branding: {
+      ...config.branding,
+      signatoryLabel: config.branding.signatoryLabel,
+    },
     dateFormat: config.invoice.dateFormat,
     currencyFormat: config.invoice.currencyFormat,
     subjectTemplate: opts.subject ?? config.mail.subjectTemplate,

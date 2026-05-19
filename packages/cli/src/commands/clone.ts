@@ -38,6 +38,7 @@ async function runClone(sourceId: string): Promise<void> {
       config.invoice.numberFormat,
       config.invoice.nextSeq,
       today,
+      config.company.name,
     );
 
     cloned = prepareClone(source, {

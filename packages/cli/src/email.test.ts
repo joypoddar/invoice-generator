@@ -202,9 +202,8 @@ describe('renderInvoiceHtml', () => {
     inv.default.taxLabel = 'GST';
     inv.default.taxAmount = 171; // 18% of 950
     const html = renderInvoiceHtml(inv);
-    expect(html).toContain('Subtotal');
+    expect(html).toContain('Amount'); // PDF-style total block label
     expect(html).toContain('GST');
-    expect(html).toContain('18%');
     expect(html).toContain('171.00');
     expect(html).toContain('1,121.00'); // total = 950 + 171
   });
@@ -221,6 +220,107 @@ describe('renderInvoiceHtml', () => {
   it('does not render Payment Instructions block when unset', () => {
     const html = renderInvoiceHtml(makeInvoice());
     expect(html).not.toContain('Payment Instructions');
+  });
+
+  describe('PDF-design parity (Phase 4.5)', () => {
+    it('renders the 6-column line-item table by default', () => {
+      const html = renderInvoiceHtml(makeInvoice());
+      // Default header (changeable via def.lineItemHeader)
+      expect(html).toContain('Description');
+      expect(html).toContain('Quantity');
+      expect(html).toContain('Rate');
+      // "Amount" appears both as column header and total-block label
+      expect(html).toMatch(/Amount/);
+      expect(html).toContain('Total</th>');
+    });
+
+    it('uses the configured lineItemHeader from invoice.default', () => {
+      const inv = makeInvoice();
+      inv.default.lineItemHeader = 'Job Position';
+      const html = renderInvoiceHtml(inv);
+      expect(html).toContain('Job Position');
+    });
+
+    it('shows the tax column only when any line has a rate or invoice has one', () => {
+      const noTax = renderInvoiceHtml(makeInvoice());
+      expect(noTax).not.toContain('>Tax</th>');
+      // Invoice-level taxRate triggers the column
+      const withTax = makeInvoice();
+      withTax.default.taxRate = 0.18;
+      withTax.default.taxLabel = 'GST';
+      expect(renderInvoiceHtml(withTax)).toContain('>GST</th>');
+    });
+
+    it('computes per-line IGST when a line item has its own taxRate', () => {
+      const inv = makeInvoice();
+      inv.default.lineItems = [
+        { description: 'taxed line', quantity: 1, unitPrice: 1000, taxRate: 0.18 },
+        { description: 'untaxed line', quantity: 1, unitPrice: 500 },
+      ];
+      inv.default.taxLabel = 'GST';
+      const html = renderInvoiceHtml(inv);
+      // Per-line IGST: 1000 × 0.18 = 180, 500 × 0 = 0
+      expect(html).toContain('180.00');
+      // Subtotal in total block: 1000 + 500 = 1500
+      expect(html).toContain('1,500.00');
+      // Total: 1500 + 180 = 1680
+      expect(html).toContain('1,680.00');
+    });
+
+    it('Rate column uses fraction-only-if-present formatting', () => {
+      const inv = makeInvoice();
+      inv.default.lineItems = [
+        { description: 'whole', quantity: 1, unitPrice: 55000 },
+        { description: 'fractional', quantity: 1, unitPrice: 99.5 },
+      ];
+      inv.default.currency = 'INR';
+      const html = renderInvoiceHtml(inv);
+      // Rate cell: whole → "55,000" (no .00). Amount cell: "55,000.00" (always .00).
+      // Both formats appear; we check the integer form is present without trailing .00
+      expect(html).toMatch(/₹55,000(?!\.0)/);
+      // Fractional line shows decimals in Rate
+      expect(html).toMatch(/99\.50/);
+    });
+
+    it('renders the Billed By company address with newline → <br/>', () => {
+      const inv = makeInvoice();
+      inv.default.companyAddress = '752 Catania Tower,\nMahagun Mascot Society,\nGhaziabad';
+      const html = renderInvoiceHtml(inv);
+      expect(html).toContain('752 Catania Tower,');
+      expect(html).toContain('Mahagun Mascot Society,');
+      expect(html).toContain('<br/>');
+    });
+
+    it('renders a signature block when branding.signatureUrl is an http URL', () => {
+      const html = renderInvoiceHtml(makeInvoice(), {
+        branding: { signatureUrl: 'https://example.com/sig.png' },
+      });
+      expect(html).toContain('https://example.com/sig.png');
+      expect(html).toContain('Authorised Signatory');
+    });
+
+    it('signature block uses a custom signatoryLabel when set', () => {
+      const html = renderInvoiceHtml(makeInvoice(), {
+        branding: {
+          signatureUrl: 'https://example.com/sig.png',
+          signatoryLabel: 'Founder',
+        },
+      });
+      expect(html).toContain('Founder');
+      expect(html).not.toContain('Authorised Signatory');
+    });
+
+    it('omits the signature block when signatureUrl is unset', () => {
+      const html = renderInvoiceHtml(makeInvoice());
+      expect(html).not.toContain('Authorised Signatory');
+    });
+
+    it('omits the signature block when a local path cannot be read', () => {
+      const html = renderInvoiceHtml(makeInvoice(), {
+        branding: { signatureUrl: '/nonexistent/path/sig.png' },
+      });
+      expect(html).not.toContain('Authorised Signatory');
+    });
   });
 
   describe('print CSS', () => {

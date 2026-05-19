@@ -26,6 +26,7 @@ async function runNew(): Promise<void> {
     config.invoice.numberFormat,
     config.invoice.nextSeq,
     today,
+    config.company.name,
   );
   const invoiceId = randomUUID();
 
@@ -152,6 +153,7 @@ function snapshotDefaults(i: SnapshotInputs): Record<string, unknown> {
     customerName: i.customerName,
     customerEmail: i.customerEmail,
     lineItems: i.lineItems,
+    lineItemHeader: c.invoice.lineItemHeader,
     currency: i.currency,
     taxRate: i.taxRate,
     taxLabel: i.taxLabel,

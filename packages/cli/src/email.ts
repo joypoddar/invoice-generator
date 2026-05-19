@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { extname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createTransport, type SendMailOptions } from 'nodemailer';
 import {
   INVOICE_HEADER_NAME,
@@ -6,11 +9,10 @@ import {
   renderSubject,
   sidecarFilenameFor,
   subjectFor,
-  totalFor,
   type Invoice,
   type LineItem,
 } from '@invoice/shared';
-import { formatCurrency, formatDate, formatPercent } from './format.js';
+import { formatCurrency, formatCurrencyMaybeInt, formatDate } from './format.js';
 
 export interface SmtpConfig {
   host: string;
@@ -29,6 +31,10 @@ export interface BrandingOpts {
   primaryColor?: string;
   fontFamily?: string;
   logoUrl?: string;
+  /** Local path or http(s) URL to a signature image. Omits block when unset. */
+  signatureUrl?: string;
+  /** Caption below the signature image. Default "Authorised Signatory". */
+  signatoryLabel?: string;
 }
 
 /**
@@ -116,7 +122,6 @@ function pickField(invoice: Invoice, defaultKey: string, customKey?: string): st
 export function renderInvoiceHtml(invoice: Invoice, opts: RenderOpts = {}): string {
   const def = invoice.default;
   const items = (def.lineItems as LineItem[] | undefined) ?? [];
-  const subtotal = totalFor(invoice);
   const currency = (def.currency as string | undefined) ?? 'INR';
 
   const primary = opts.branding?.primaryColor ?? DEFAULT_PRIMARY_COLOR;
@@ -126,21 +131,27 @@ export function renderInvoiceHtml(invoice: Invoice, opts: RenderOpts = {}): stri
   const issueDate = formatDate(def.issueDate as string | undefined, dateFormat);
   const dueDate = formatDate(def.dueDate as string | undefined, dateFormat);
 
-  // Tax + total. taxAmount is computed at `invoice new` time but recompute
-  // defensively here in case it's missing from older invoices.
-  const taxRate = typeof def.taxRate === 'number' ? (def.taxRate as number) : undefined;
+  const invoiceTaxRate = typeof def.taxRate === 'number' ? (def.taxRate as number) : undefined;
   const taxLabel = (def.taxLabel as string | undefined) ?? 'Tax';
-  const taxAmount =
-    typeof def.taxAmount === 'number'
-      ? (def.taxAmount as number)
-      : taxRate !== undefined
-        ? subtotal * taxRate
-        : undefined;
-  const total = subtotal + (taxAmount ?? 0);
+  const lineItemHeader = (def.lineItemHeader as string | undefined) ?? 'Description';
+
+  // Per-line tax: each line uses its own taxRate if present, else invoice-level
+  // taxRate, else 0. Totals are summed from the lines so they always reconcile
+  // with what the line column shows.
+  const computed = items.map((it) => {
+    const rate = typeof it.taxRate === 'number' ? it.taxRate : invoiceTaxRate ?? 0;
+    const amount = it.quantity * it.unitPrice;
+    const igst = amount * rate;
+    return { item: it, rate, amount, igst, total: amount + igst };
+  });
+  const subtotal = computed.reduce((s, c) => s + c.amount, 0);
+  const totalIgst = computed.reduce((s, c) => s + c.igst, 0);
+  const total = subtotal + totalIgst;
 
   // Sender / recipient / bank fields (default first, custom legacy second)
   const fromName = pickField(invoice, 'fromName');
   const fromEmail = pickField(invoice, 'fromEmail');
+  const companyAddress = pickField(invoice, 'companyAddress');
   const companyPhone = pickField(invoice, 'companyPhone', 'fromPhone');
   const customerName = pickField(invoice, 'customerName');
   const customerEmail = pickField(invoice, 'customerEmail');
@@ -155,18 +166,26 @@ export function renderInvoiceHtml(invoice: Invoice, opts: RenderOpts = {}): stri
   const showBankDetails =
     bankAccountName || bankAccountNumber || bankIfsc || bankAccountType || bankName;
 
-  // Line-item rows
-  const rows = items
-    .map(
-      (it, i) => `
+  // 6-column line-item rows: # | <header> | Qty | Rate | Amount | IGST | Total
+  // (Rate uses fraction-only-if-present formatting to match the typical invoice
+  // style; Amount/IGST/Total always show two decimals.)
+  const showTaxColumn = computed.some((c) => c.rate > 0) || invoiceTaxRate !== undefined;
+  const rows = computed
+    .map(({ item: it, amount, igst, total: lineTotal }, i) => {
+      const taxCell = showTaxColumn
+        ? `<td style="padding:10px 14px; color:#444; font-size:13px; text-align:right;">${escapeHtml(formatCurrency(igst, currency))}</td>`
+        : '';
+      return `
       <tr style="background:#fff;">
-        <td style="padding:10px 14px; color:#444; font-size:13px;">${i + 1}.</td>
+        <td style="padding:10px 14px; color:#444; font-size:13px; width:36px;">${i + 1}.</td>
         <td style="padding:10px 14px; color:#444; font-size:13px;">${escapeHtml(it.description)}</td>
-        <td style="padding:10px 14px; color:#444; font-size:13px; text-align:right;">
-          ${escapeHtml(formatCurrency(it.quantity * it.unitPrice, currency))}
-        </td>
-      </tr>`,
-    )
+        <td style="padding:10px 14px; color:#444; font-size:13px; text-align:center;">${it.quantity}</td>
+        <td style="padding:10px 14px; color:#444; font-size:13px; text-align:right;">${escapeHtml(formatCurrencyMaybeInt(it.unitPrice, currency))}</td>
+        <td style="padding:10px 14px; color:#444; font-size:13px; text-align:right;">${escapeHtml(formatCurrency(amount, currency))}</td>
+        ${taxCell}
+        <td style="padding:10px 14px; color:#444; font-size:13px; text-align:right;">${escapeHtml(formatCurrency(lineTotal, currency))}</td>
+      </tr>`;
+    })
     .join('');
 
   // Extra custom fields (excluding bank/phone/address — those have moved to default)
@@ -213,12 +232,14 @@ export function renderInvoiceHtml(invoice: Invoice, opts: RenderOpts = {}): stri
   // double-rule above the running total.
   const totalBlock = renderTotalBlock({
     subtotal,
-    taxRate,
     taxLabel,
-    taxAmount,
+    taxAmount: showTaxColumn ? totalIgst : undefined,
     total,
     currency,
   });
+
+  // Signature block (opt-in via branding.signatureUrl).
+  const signatureBlock = renderSignatureBlock(opts.branding, primary);
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -270,9 +291,16 @@ export function renderInvoiceHtml(invoice: Invoice, opts: RenderOpts = {}): stri
         <td style="width:48%; vertical-align:top; background:#eef0fb; border-radius:8px;
                    padding:18px 20px;">
           <p style="margin:0 0 10px; font-size:14px; font-weight:700; color:${primary};">Billed By</p>
-          <p style="margin:0 0 12px; font-size:14px; font-weight:700; color:#222;">
+          <p style="margin:0 0 ${companyAddress ? '6px' : '12px'}; font-size:14px; font-weight:700; color:#222;">
             ${escapeHtml(fromName)}
           </p>
+          ${
+            companyAddress
+              ? `<p style="margin:0 0 8px; font-size:13px; color:#444; line-height:1.6;">
+            ${escapeHtml(companyAddress).replace(/\n/g, '<br/>')}
+          </p>`
+              : ''
+          }
           ${
             fromEmail
               ? `<p style="margin:0 0 4px; font-size:13px; color:#444;">
@@ -315,20 +343,32 @@ export function renderInvoiceHtml(invoice: Invoice, opts: RenderOpts = {}): stri
       </tr>
     </table>
 
-    <!-- ── Earnings Table ── -->
+    <!-- ── Line items table ── -->
     <table style="border-collapse:collapse; width:100%; margin-bottom:24px;">
       <thead>
         <tr style="background:${primary};">
           <th style="padding:11px 14px; text-align:left; font-size:13px;
-                     font-weight:600; color:#fff; width:40px;"></th>
+                     font-weight:600; color:#fff; width:36px;"></th>
           <th style="padding:11px 14px; text-align:left; font-size:13px;
-                     font-weight:600; color:#fff;">Earning</th>
+                     font-weight:600; color:#fff;">${escapeHtml(lineItemHeader)}</th>
+          <th style="padding:11px 14px; text-align:center; font-size:13px;
+                     font-weight:600; color:#fff;">Quantity</th>
+          <th style="padding:11px 14px; text-align:right; font-size:13px;
+                     font-weight:600; color:#fff;">Rate</th>
           <th style="padding:11px 14px; text-align:right; font-size:13px;
                      font-weight:600; color:#fff;">Amount</th>
+          ${
+            showTaxColumn
+              ? `<th style="padding:11px 14px; text-align:right; font-size:13px;
+                     font-weight:600; color:#fff;">${escapeHtml(taxLabel)}</th>`
+              : ''
+          }
+          <th style="padding:11px 14px; text-align:right; font-size:13px;
+                     font-weight:600; color:#fff;">Total</th>
         </tr>
       </thead>
       <tbody>
-        ${rows || `<tr><td colspan="3" style="padding:12px 14px; color:#aaa; font-size:13px;">No items</td></tr>`}
+        ${rows || `<tr><td colspan="${showTaxColumn ? 7 : 6}" style="padding:12px 14px; color:#aaa; font-size:13px;">No items</td></tr>`}
       </tbody>
     </table>
 
@@ -358,6 +398,7 @@ export function renderInvoiceHtml(invoice: Invoice, opts: RenderOpts = {}): stri
       </tr>
     </table>
 
+    ${signatureBlock}
     ${paymentInstructionsSection}
     ${extraCustomSection}
     ${notesSection}
@@ -365,6 +406,46 @@ export function renderInvoiceHtml(invoice: Invoice, opts: RenderOpts = {}): stri
   </div>
 </body>
 </html>`;
+}
+
+function renderSignatureBlock(branding: BrandingOpts | undefined, primary: string): string {
+  const url = branding?.signatureUrl;
+  if (!url) return '';
+  const src = resolveSignatureSrc(url);
+  if (!src) return '';
+  const label = branding?.signatoryLabel ?? 'Authorised Signatory';
+  return `<div style="margin-top:8px; text-align:right;">
+    <img src="${src}" alt="Signature" style="max-height:60px; max-width:240px;" />
+    <p style="margin:4px 0 0; font-size:12px; color:${primary};">${escapeHtml(label)}</p>
+  </div>`;
+}
+
+/**
+ * Resolve a signature URL/path into something an `<img src>` can render.
+ * - http(s):// URLs pass through.
+ * - file:// or absolute/relative paths are read + base64-embedded so the email
+ *   doesn't depend on an external fetch.
+ * - Returns null when the path is invalid or unreadable (renderer omits block).
+ */
+function resolveSignatureSrc(urlOrPath: string): string | null {
+  if (/^https?:\/\//i.test(urlOrPath)) return urlOrPath;
+  if (urlOrPath.startsWith('data:')) return urlOrPath;
+  const path = urlOrPath.startsWith('file://') ? fileURLToPath(urlOrPath) : urlOrPath;
+  try {
+    const buf = readFileSync(path);
+    const ext = extname(path).toLowerCase();
+    const mime =
+      ext === '.jpg' || ext === '.jpeg'
+        ? 'image/jpeg'
+        : ext === '.svg'
+          ? 'image/svg+xml'
+          : ext === '.gif'
+            ? 'image/gif'
+            : 'image/png';
+    return `data:${mime};base64,${buf.toString('base64')}`;
+  } catch {
+    return null;
+  }
 }
 
 function renderBankRow(label: string, value: string): string {
@@ -378,32 +459,25 @@ function renderBankRow(label: string, value: string): string {
 
 function renderTotalBlock(args: {
   subtotal: number;
-  taxRate: number | undefined;
   taxLabel: string;
   taxAmount: number | undefined;
   total: number;
   currency: string;
 }): string {
-  const { subtotal, taxRate, taxLabel, taxAmount, total, currency } = args;
+  const { subtotal, taxLabel, taxAmount, total, currency } = args;
   const showTax = typeof taxAmount === 'number';
   const subtotalRow = showTax
     ? `<tr>
-        <td style="padding:6px 0; font-size:13px; color:#555;">Subtotal</td>
+        <td style="padding:6px 0; font-size:13px; color:#555;">Amount</td>
         <td style="padding:6px 0; font-size:13px; color:#555; text-align:right;">${escapeHtml(formatCurrency(subtotal, currency))}</td>
       </tr>`
     : '';
-  const taxRow =
-    showTax && taxRate !== undefined
-      ? `<tr>
-        <td style="padding:6px 0; font-size:13px; color:#555;">${escapeHtml(taxLabel)} (${escapeHtml(formatPercent(taxRate))})</td>
+  const taxRow = showTax
+    ? `<tr>
+        <td style="padding:6px 0; font-size:13px; color:#555;">${escapeHtml(taxLabel)}</td>
         <td style="padding:6px 0; font-size:13px; color:#555; text-align:right;">${escapeHtml(formatCurrency(taxAmount, currency))}</td>
       </tr>`
-      : showTax
-        ? `<tr>
-            <td style="padding:6px 0; font-size:13px; color:#555;">${escapeHtml(taxLabel)}</td>
-            <td style="padding:6px 0; font-size:13px; color:#555; text-align:right;">${escapeHtml(formatCurrency(taxAmount, currency))}</td>
-          </tr>`
-        : '';
+    : '';
 
   return `<table style="border-collapse:collapse; width:100%;">
     ${subtotalRow}

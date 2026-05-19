@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatCurrency, formatDate, formatPercent } from './format.js';
+import { formatCurrency, formatCurrencyMaybeInt, formatDate, formatPercent } from './format.js';
 
 describe('formatDate', () => {
   const iso = '2026-05-17';
@@ -38,6 +38,41 @@ describe('formatDate', () => {
 
   it('falls back to DD/MM/YYYY for unknown formats', () => {
     expect(formatDate(iso, 'BOGUS')).toBe('17/05/2026');
+  });
+
+  it('formats MMM DD, YYYY with short month name', () => {
+    expect(formatDate('2026-03-28', 'MMM DD, YYYY')).toBe('Mar 28, 2026');
+    expect(formatDate('2026-12-01', 'MMM DD, YYYY')).toBe('Dec 1, 2026');
+  });
+
+  it('formats MMMM DD, YYYY with long month name', () => {
+    expect(formatDate('2026-03-28', 'MMMM DD, YYYY')).toBe('March 28, 2026');
+  });
+
+  it('formats DD MMM YYYY', () => {
+    expect(formatDate('2026-03-28', 'DD MMM YYYY')).toBe('28 Mar 2026');
+  });
+
+  it('ISO8601 is an alias for YYYY-MM-DD', () => {
+    expect(formatDate(iso, 'ISO8601')).toBe('2026-05-17');
+  });
+});
+
+describe('formatCurrencyMaybeInt', () => {
+  it('omits decimals for whole INR amounts', () => {
+    const out = formatCurrencyMaybeInt(55000, 'INR');
+    expect(out).toContain('55,000');
+    expect(out).not.toContain('.00');
+  });
+
+  it('shows decimals when the amount has a fraction', () => {
+    const out = formatCurrencyMaybeInt(55000.5, 'INR');
+    expect(out).toContain('55,000.50');
+  });
+
+  it('handles USD the same way', () => {
+    expect(formatCurrencyMaybeInt(100, 'USD')).not.toContain('.00');
+    expect(formatCurrencyMaybeInt(99.99, 'USD')).toContain('99.99');
   });
 });
 

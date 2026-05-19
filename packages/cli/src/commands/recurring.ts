@@ -250,6 +250,7 @@ async function runGenerate(opts: GenerateOptions): Promise<void> {
           config.invoice.numberFormat,
           mutableNextSeq,
           new Date(issueDate),
+          config.company.name,
         );
         const id = randomUUID();
 

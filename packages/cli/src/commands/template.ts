@@ -103,6 +103,7 @@ async function runUse(name: string): Promise<void> {
     config.invoice.numberFormat,
     config.invoice.nextSeq,
     today,
+    config.company.name,
   );
 
   const invoice = materializeFromTemplate(template, {

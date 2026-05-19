@@ -13,6 +13,7 @@ export const DEFAULT_FIELDS = [
   'customerEmail',
   'customerAddress',
   'lineItems',
+  'lineItemHeader',
   'currency',
   'taxRate',
   'taxLabel',
@@ -32,6 +33,8 @@ export interface LineItem {
   description: string;
   quantity: number;
   unitPrice: number;
+  /** Per-line tax rate (e.g. 0.18 for 18%). Falls back to invoice-level taxRate at render time. */
+  taxRate?: number;
 }
 
 export interface Invoice {
@@ -47,16 +50,26 @@ export interface Invoice {
 
 const SEQ_PAD = 4;
 
-export function renderInvoiceNumber(format: string, seq: number, date: Date = new Date()): string {
+export function renderInvoiceNumber(
+  format: string,
+  seq: number,
+  date: Date = new Date(),
+  companyName?: string,
+): string {
   const seqStr = String(seq).padStart(SEQ_PAD, '0');
   const yyyy = String(date.getFullYear());
   const mm = String(date.getMonth() + 1).padStart(2, '0');
   const dd = String(date.getDate()).padStart(2, '0');
+  // {COMPANY3}: first 3 non-space chars of company name, uppercased. Empty if unset.
+  const company3 = companyName
+    ? companyName.replace(/\s+/g, '').slice(0, 3).toUpperCase()
+    : '';
   return format
     .replaceAll('{SEQ}', seqStr)
     .replaceAll('{YYYY}', yyyy)
     .replaceAll('{MM}', mm)
-    .replaceAll('{DD}', dd);
+    .replaceAll('{DD}', dd)
+    .replaceAll('{COMPANY3}', company3);
 }
 
 export function totalFor(invoice: Invoice): number {

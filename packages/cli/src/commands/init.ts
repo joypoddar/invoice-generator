@@ -178,6 +178,189 @@ function mergeConfig(existing: Config | null, inputs: InitInputs): unknown {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Section helpers (used by Phase 4.6's `invoice setup <section>` + the extended
+// init flow). Each takes the matching slice of existing config and returns the
+// new slice. Empty inputs preserve whatever was there before.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Multi-line input. Prompts `Line N:` repeatedly until empty.
+ * Pressing Enter immediately on the first line keeps the existing value (if any).
+ * Returns undefined when there's no existing AND no lines entered.
+ */
+export async function readMultiline(label: string, existing?: string): Promise<string | undefined> {
+  if (existing) {
+    console.log(`  ${label} (current):`);
+    console.log('    ' + existing.split('\n').join('\n    '));
+    console.log('  Press Enter on Line 1 to keep, or type to replace (empty line ends).');
+  } else {
+    console.log(`  ${label} (line by line; empty line to finish):`);
+  }
+  const lines: string[] = [];
+  let i = 1;
+  while (true) {
+    const line = await input({ message: `    Line ${i}:`, default: '' });
+    if (line === '') {
+      if (i === 1 && existing !== undefined) return existing;
+      break;
+    }
+    lines.push(line);
+    i++;
+  }
+  return lines.length > 0 ? lines.join('\n') : undefined;
+}
+
+/** Drop empty strings from an object so we don't write `field: ""` to config. */
+function omitEmpty<T extends Record<string, unknown>>(obj: T): Partial<T> {
+  const out: Partial<T> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v !== undefined && v !== null && v !== '') {
+      (out as Record<string, unknown>)[k] = v;
+    }
+  }
+  return out;
+}
+
+/** First 3 non-whitespace chars of the company name, uppercased — matches `{COMPANY3}` substitution. */
+function companyPrefix(name: string | undefined): string {
+  if (!name) return '';
+  return name.replace(/\s/g, '').slice(0, 3).toUpperCase();
+}
+
+export async function setupCompany(
+  existing: Config['company'] = {},
+): Promise<Config['company']> {
+  console.log('\n--- Company info (shown in the Billed By section) ---');
+  const name = await input({ message: 'Company name:', default: existing.name ?? '' });
+  const address = await readMultiline('Company address', existing.address);
+  const phone = await input({ message: 'Phone:', default: existing.phone ?? '' });
+  const website = await input({ message: 'Website:', default: existing.website ?? '' });
+  const taxId = await input({ message: 'Tax ID / GSTIN:', default: existing.taxId ?? '' });
+  return omitEmpty({ name, address, phone, website, taxId }) as Config['company'];
+}
+
+export async function setupBank(existing: Config['bank'] = {}): Promise<Config['bank']> {
+  console.log('\n--- Bank details (shown in the Bank Details box) ---');
+  const accountName = await input({
+    message: 'Account name:',
+    default: existing.accountName ?? '',
+  });
+  const accountNumber = await input({
+    message: 'Account number:',
+    default: existing.accountNumber ?? '',
+  });
+  const ifsc = await input({ message: 'IFSC code:', default: existing.ifsc ?? '' });
+  const accountType = await input({
+    message: 'Account type (e.g. Savings / Current):',
+    default: existing.accountType ?? '',
+  });
+  const bankName = await input({ message: 'Bank name:', default: existing.bankName ?? '' });
+  return omitEmpty({
+    accountName,
+    accountNumber,
+    ifsc,
+    accountType,
+    bankName,
+  }) as Config['bank'];
+}
+
+export interface TaxSection {
+  defaultTaxRate?: number;
+  taxLabel?: string;
+  paymentInstructions?: string;
+}
+
+export async function setupTax(existing: TaxSection = {}): Promise<TaxSection> {
+  console.log('\n--- Tax & payment defaults ---');
+  const rateRaw = await input({
+    message: 'Default tax rate (decimal, e.g. 0.18 for 18%; empty to clear):',
+    default: existing.defaultTaxRate !== undefined ? String(existing.defaultTaxRate) : '',
+  });
+  const parsedRate = rateRaw === '' ? undefined : Number(rateRaw);
+  const defaultTaxRate = Number.isFinite(parsedRate) ? parsedRate : undefined;
+  const taxLabel = await input({
+    message: 'Tax label (e.g. GST, IGST, VAT):',
+    default: existing.taxLabel ?? '',
+  });
+  const paymentInstructions = await readMultiline(
+    'Payment instructions',
+    existing.paymentInstructions,
+  );
+  return omitEmpty({ defaultTaxRate, taxLabel, paymentInstructions });
+}
+
+export async function setupMail(existing: Config['mail']): Promise<Config['mail']> {
+  console.log('\n--- Mail (subject line, body template, reply-to) ---');
+  console.log(
+    '  Placeholders: {invoiceNumber}, {customerName}, {total}, {currency}, {issueDate}, {dueDate}',
+  );
+  const subjectTemplate = await input({
+    message: 'Subject template (empty for default):',
+    default: existing.subjectTemplate ?? '',
+  });
+  const replyTo = await input({
+    message: 'Reply-to email (optional):',
+    default: existing.replyTo ?? '',
+  });
+  const bodyTemplate = await readMultiline('Body template (optional)', existing.bodyTemplate);
+  return {
+    ...existing,
+    ...omitEmpty({ subjectTemplate, replyTo, bodyTemplate }),
+  };
+}
+
+export async function setupBranding(
+  existing: Config['branding'] = {},
+): Promise<Config['branding']> {
+  console.log('\n--- Branding & signature ---');
+  const primaryColor = await input({
+    message: 'Primary color (hex, e.g. #3949ab):',
+    default: existing.primaryColor ?? '',
+  });
+  const fontFamily = await input({
+    message: 'Font family:',
+    default: existing.fontFamily ?? '',
+  });
+  const signatureUrl = await input({
+    message: 'Signature image path or URL (optional):',
+    default: existing.signatureUrl ?? '',
+  });
+  const signatoryLabel = await input({
+    message: 'Signatory label:',
+    default: existing.signatoryLabel ?? 'Authorised Signatory',
+  });
+  return omitEmpty({
+    primaryColor,
+    fontFamily,
+    signatureUrl,
+    signatoryLabel,
+  }) as Config['branding'];
+}
+
+export async function setupLineItemHeader(existing: string = 'Description'): Promise<string> {
+  console.log('\n--- Line-item column header ---');
+  const header = await input({
+    message: 'Header text:',
+    default: existing,
+  });
+  return header || 'Description';
+}
+
+/**
+ * Number-format prompt. When `companyName` is set (and the existing format
+ * doesn't already use a literal prefix), suggest `{COMPANY3}-{YYYY}-{SEQ}` so
+ * the format adapts if the company name later changes.
+ */
+export async function setupNumberFormat(existing: string, companyName?: string): Promise<string> {
+  const prefix = companyPrefix(companyName);
+  const suggested = existing || (prefix ? '{COMPANY3}-{YYYY}-{SEQ}' : 'INV-{YYYY}-{SEQ}');
+  return await input({
+    message: 'Invoice number format (placeholders: {SEQ}, {YYYY}, {MM}, {DD}, {COMPANY3}):',
+    default: suggested,
+  });
+}
+
 // Suppress unused-import lint for `confirm` while keeping the import for future
-// use (e.g. "overwrite existing config?"). Phase 1 doesn't ask, so reference it.
+// use (Phase 4.6 wires it into the optional-sections gates).
 void confirm;

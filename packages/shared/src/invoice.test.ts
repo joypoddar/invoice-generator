@@ -47,6 +47,23 @@ describe('renderInvoiceNumber', () => {
   it('replaces all occurrences of a variable', () => {
     expect(renderInvoiceNumber('{SEQ}-{SEQ}', 3, date)).toBe('0003-0003');
   });
+
+  it('substitutes {COMPANY3} with the first 3 uppercased chars of company name', () => {
+    expect(renderInvoiceNumber('{COMPANY3}-{SEQ}', 1, date, 'Creowis')).toBe('CRE-0001');
+    expect(renderInvoiceNumber('{COMPANY3}{SEQ}', 42, date, 'Acme Corp')).toBe('ACM0042');
+  });
+
+  it('{COMPANY3} drops whitespace before taking the first 3 chars', () => {
+    expect(renderInvoiceNumber('{COMPANY3}-{SEQ}', 1, date, 'A B Co')).toBe('ABC-0001');
+  });
+
+  it('{COMPANY3} renders empty string when company name is missing', () => {
+    expect(renderInvoiceNumber('{COMPANY3}-{SEQ}', 1, date)).toBe('-0001');
+  });
+
+  it('{COMPANY3} truncates company names shorter than 3 chars', () => {
+    expect(renderInvoiceNumber('{COMPANY3}-{SEQ}', 1, date, 'Ab')).toBe('AB-0001');
+  });
 });
 
 describe('totalFor', () => {

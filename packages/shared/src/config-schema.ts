@@ -16,6 +16,7 @@ export const ConfigSchema = z.object({
       paymentInstructions: z.string().optional(),
       dateFormat: z.string().optional(),
       currencyFormat: z.string().optional(),
+      lineItemHeader: z.string().default('Description'),
     })
     .default({}),
 
@@ -34,6 +35,8 @@ export const ConfigSchema = z.object({
       primaryColor: z.string().optional(),
       fontFamily: z.string().optional(),
       logoUrl: z.string().optional(),
+      signatureUrl: z.string().optional(),
+      signatoryLabel: z.string().optional(),
     })
     .default({}),
 
