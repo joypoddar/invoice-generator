@@ -1,6 +1,7 @@
 #!/usr/bin/env -S node --no-warnings=ExperimentalWarning
 import { Command } from 'commander';
 import * as init from './commands/init.js';
+import * as setup from './commands/setup.js';
 import * as whoami from './commands/whoami.js';
 import * as configCmd from './commands/config.js';
 import * as newCmd from './commands/new.js';
@@ -17,6 +18,7 @@ const program = new Command();
 program.name('invoice').description('Invoice generator').version('0.0.0');
 
 init.register(program);
+setup.register(program);
 configCmd.register(program);
 whoami.register(program);
 newCmd.register(program);
