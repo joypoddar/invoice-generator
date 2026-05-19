@@ -4,6 +4,7 @@ import { confirm, input } from '@inquirer/prompts';
 import { renderInvoiceNumber, type Invoice, type LineItem } from '@invoice/shared';
 import { SqliteStore } from '@invoice/core';
 import { dbPath, loadConfigSafe, saveConfig } from '../store.js';
+import { readMultiline } from './init.js';
 
 export function register(program: Command): void {
   program
@@ -35,6 +36,7 @@ async function runNew(): Promise<void> {
 
   const customerName = await input({ message: 'Customer name:', required: true });
   const customerEmail = await input({ message: 'Customer email:', default: '' });
+  const customerAddress = await readMultiline('Customer address (optional)');
   const currency = await input({ message: 'Currency:', default: config.currency });
 
   console.log('\nLine items:');
@@ -85,6 +87,7 @@ async function runNew(): Promise<void> {
       config,
       customerName,
       customerEmail,
+      customerAddress,
       currency,
       lineItems,
       taxRate,
@@ -129,6 +132,7 @@ interface SnapshotInputs {
   config: import('@invoice/shared').Config;
   customerName: string;
   customerEmail: string;
+  customerAddress: string | undefined;
   currency: string;
   lineItems: LineItem[];
   taxRate: number | undefined;
@@ -152,6 +156,7 @@ function snapshotDefaults(i: SnapshotInputs): Record<string, unknown> {
     companyTaxId: c.company.taxId,
     customerName: i.customerName,
     customerEmail: i.customerEmail,
+    customerAddress: i.customerAddress,
     lineItems: i.lineItems,
     lineItemHeader: c.invoice.lineItemHeader,
     currency: i.currency,
