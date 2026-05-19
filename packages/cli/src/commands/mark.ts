@@ -2,6 +2,7 @@ import type { Command } from 'commander';
 import { type Invoice } from '@invoice/shared';
 import { SqliteStore } from '@invoice/core';
 import { dbPath, loadConfigSafe } from '../store.js';
+import { exitWithResolveError, resolveInvoice } from '../resolver.js';
 
 const VALID_STATUSES = ['paid', 'unpaid'] as const;
 type PaymentStatus = (typeof VALID_STATUSES)[number];
@@ -27,11 +28,9 @@ async function runMark(id: string, status: string): Promise<void> {
 
   const store = new SqliteStore(dbPath());
   try {
-    const invoice = await store.get(id);
-    if (!invoice) {
-      console.error(`No invoice with id: ${id}`);
-      process.exit(1);
-    }
+    const result = await resolveInvoice(store, id);
+    if (!result.ok) exitWithResolveError(id, result);
+    const invoice = result.invoice;
 
     const updated: Invoice = {
       ...invoice,

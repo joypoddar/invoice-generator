@@ -5,6 +5,7 @@ import { SqliteStore } from '@invoice/core';
 import { dbPath, loadConfigSafe } from '../store.js';
 import { getPassword, SMTP_PASSWORD_ACCOUNT } from '../secrets.js';
 import { sendInvoice, type Recipients, type RenderOpts } from '../email.js';
+import { exitWithResolveError, resolveInvoice } from '../resolver.js';
 
 interface SendOptions {
   to?: string[];
@@ -43,16 +44,14 @@ async function runSend(id: string, opts: SendOptions): Promise<void> {
   }
 
   const store = new SqliteStore(dbPath());
-  let invoice: Invoice | null;
+  let invoice: Invoice;
   try {
-    invoice = await store.get(id);
+    const result = await resolveInvoice(store, id);
+    if (!result.ok) exitWithResolveError(id, result);
+    invoice = result.invoice;
   } finally {
     // re-opened later if/when we update the row; keep this scope tight
     store.close();
-  }
-  if (!invoice) {
-    console.error(`No invoice with id: ${id}`);
-    process.exit(1);
   }
   if (invoice.status === 'sent') {
     console.error(

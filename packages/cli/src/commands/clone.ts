@@ -3,6 +3,7 @@ import type { Command } from 'commander';
 import { renderInvoiceNumber, totalFor, type Invoice } from '@invoice/shared';
 import { SqliteStore, prepareClone } from '@invoice/core';
 import { dbPath, loadConfigSafe, saveConfig } from '../store.js';
+import { exitWithResolveError, resolveInvoice } from '../resolver.js';
 
 export { prepareClone };
 
@@ -25,11 +26,9 @@ async function runClone(sourceId: string): Promise<void> {
   const store = new SqliteStore(dbPath());
   let cloned: Invoice;
   try {
-    const source = await store.get(sourceId);
-    if (!source) {
-      console.error(`No invoice with id: ${sourceId}`);
-      process.exit(1);
-    }
+    const result = await resolveInvoice(store, sourceId);
+    if (!result.ok) exitWithResolveError(sourceId, result);
+    const source = result.invoice;
 
     const today = new Date();
     const issueDate = toIsoDate(today);
