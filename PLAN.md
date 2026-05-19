@@ -944,6 +944,169 @@ Three concerns blended into one phase: customer-facing rendering polish, subject
 - Dashboard pages — Phase 5.
 - Auto-sending recurring invoices — explicit non-goal.
 
+## Phase 4.6 — Onboarding ergonomics & quick id access
+
+### Context
+
+Two friction points emerged from manual use after Phases 4 + 4.5:
+
+1. **New schema fields aren't onboarded.** `invoice init` still asks only for SMTP/IMAP/recipients. The company/bank/tax/payment/branding/signature/line-item-header fields all exist in the schema, but to populate them users have to read `PLAN.md` and run `invoice config set company.name "..."` for each — one key at a time. There's also no per-invoice prompt for `customerAddress`, even though the renderer shows it.
+2. **No quick way to find an invoice id later.** `invoice new` prints the UUID once. `invoice list` doesn't show it. To `invoice send <id>` later, users scroll terminal history or open `local.db`. The UUID is also long (36 chars) and not the mental model users actually have ("send INV-2026-0042").
+
+### Goals
+
+- One-shot onboarding covering every field on the rendered invoice via `invoice init`.
+- Per-section re-entry via `invoice setup <section>` for incremental edits.
+- `invoice list` shows a short id. `send`/`mark`/`clone` accept full UUID, short id (first 8 chars), or invoice number.
+
+### Step 1 — Refactor init into reusable section helpers
+
+**Files**:
+
+- `packages/cli/src/commands/init.ts` — extract the per-section flows into pure-ish async functions.
+
+**New helpers** (each takes the matching slice of existing config + returns new values; prompts inline; Enter-to-keep current value):
+
+- `setupCompany(existing: Config['company']): Promise<Config['company']>` — name, address (multi-line), phone, website, taxId.
+- `setupBank(existing: Config['bank']): Promise<Config['bank']>` — accountName, accountNumber, ifsc, accountType, bankName.
+- `setupTax(existing: { defaultTaxRate?, taxLabel?, paymentInstructions? }): Promise<same>` — rate (decimal), label, payment instructions (multi-line).
+- `setupBranding(existing: Config['branding']): Promise<Config['branding']>` — primaryColor, fontFamily, signatureUrl, signatoryLabel.
+- `setupLineItemHeader(existing: string): Promise<string>` — header text (default "Description").
+- `setupMail(existing: Config['mail']): Promise<Config['mail']>` — subjectTemplate, bodyTemplate (multi-line), replyTo. Default subjectTemplate is empty (falls back to built-in `subjectFor`). Hint shows the 6 supported placeholders: `{invoiceNumber}/{customerName}/{total}/{currency}/{issueDate}/{dueDate}`.
+
+Co-located in `init.ts` so both `init` and `setup` can import without circular deps.
+
+### Step 2 — Reorder init + add optional sections
+
+**Files**:
+
+- `packages/cli/src/commands/init.ts` — rework the prompt order.
+
+**New order** (rearranged so the company name is captured before the number-format prompt, which then suggests `{COMPANY3}-...`):
+
+1. **Identity**: name, email, currency.
+2. **Company info** (optional section — `Set up company info now? (y/N)`). If yes → `setupCompany(...)`. Captures `company.name` (used in #3).
+3. **Invoice number format**: prompt defaults to `{COMPANY3}-{YYYY}-{SEQ}` when `company.name` is set, else falls back to `INV-{YYYY}-{SEQ}`. Help text mentions all placeholders including `{COMPANY3}` from Phase 4.5.
+4. **SMTP** (host/port/user/password + live verify).
+5. **IMAP** (host/port/user/password + folder picker).
+6. **Default recipients** (to/cc/bcc).
+7. **Optional sections** — each gated on a `(y/N)` prompt:
+   - `Set up bank details now? (y/N)` → `setupBank`
+   - `Set up tax & payment defaults now? (y/N)` → `setupTax`
+   - `Set up mail (subject line, body, reply-to) now? (y/N)` → `setupMail`
+   - `Set up branding & signature now? (y/N)` → `setupBranding`
+   - `Set the line-item column header? (y/N)` → `setupLineItemHeader`
+
+Each "y" calls the matching helper; results merge into the final config before save. Re-running init keeps all existing values as defaults.
+
+### Step 3 — `invoice setup <section>` subcommand
+
+**Files**:
+
+- `packages/cli/src/commands/setup.ts` (new):
+  - `invoice setup company` → `setupCompany(config.company)` → save.
+  - `invoice setup bank` → `setupBank(config.bank)` → save.
+  - `invoice setup tax` → `setupTax({...})` → save into `config.invoice`.
+  - `invoice setup mail` → `setupMail(config.mail)` → save. (Subject template, body template, replyTo.)
+  - `invoice setup branding` → `setupBranding(config.branding)` → save.
+  - `invoice setup line-header` → `setupLineItemHeader(config.invoice.lineItemHeader)` → save.
+  - `invoice setup number-format` → re-prompts `invoice.numberFormat` with the same `{COMPANY3}-{YYYY}-{SEQ}` default logic as init.
+  - `invoice setup all` → runs every section (effectively a re-run of the optional sections of init without re-asking SMTP/IMAP).
+- `packages/cli/src/index.ts` — register.
+
+Each subcommand bails if no config exists: `"Run \`invoice init\` first to set up the basics."`
+
+### Step 4 — `customerAddress` prompt in `invoice new`
+
+**Files**:
+
+- `packages/cli/src/commands/new.ts` — after the customer email prompt, before currency:
+
+```
+Customer address (multi-line; empty line to finish):
+  Line 1: 752 Catania Tower
+  Line 2: Mahagun Mascot Society
+  Line 3:
+```
+
+Sub-loop prompting `Line N:` until an empty input. Lines joined with `\n` and stored in `default.customerAddress`. The renderer already converts `\n` → `<br/>` in the Billed To box.
+
+### Step 5 — Short id column in `invoice list`
+
+**Files**:
+
+- `packages/cli/src/commands/list.ts`:
+  - Prepend `Id` column showing `invoice.id.slice(0, 8)`.
+  - New flag: `--full-id` (or `--full`) renders the full 36-char UUID.
+  - Header reads `Id` or `Id (full)` accordingly.
+
+The full UUID stays in the JSON sidecar and DB; this is purely display.
+
+### Step 6 — Resolver: accept UUID, short id, or invoice number
+
+**Files**:
+
+- `packages/cli/src/resolver.ts` (new):
+
+```ts
+export type ResolveResult =
+  | { ok: true; invoice: Invoice }
+  | { ok: false; reason: 'not-found' }
+  | { ok: false; reason: 'ambiguous'; matches: Invoice[] };
+
+export async function resolveInvoice(store: InvoiceStore, ref: string): Promise<ResolveResult>;
+```
+
+Resolution order:
+
+1. **Full UUID** match — `store.get(ref)`. If exists, return it.
+2. **Short-id prefix** — `inv.id.startsWith(ref)` when `ref.length` is 4–35.
+3. **Invoice number exact match** — `String(inv.default.invoiceNumber) === ref`.
+
+Steps 2 and 3 search a single `store.list()` call; their matches are merged and deduped. Single match → `{ ok: true }`. Multiple → `{ ok: false, reason: 'ambiguous', matches }`. None → `{ ok: false, reason: 'not-found' }`.
+
+- `packages/cli/src/commands/send.ts` / `mark.ts` / `clone.ts`:
+  - Replace `store.get(id)` with `resolveInvoice(store, id)`.
+  - On `ambiguous`: print each match as `{short-id} {number} {customer}` and exit 1 so user can re-run with a more specific reference.
+
+- `packages/cli/src/resolver.test.ts` (new):
+  - Full UUID hit, short-prefix hit, invoice-number hit.
+  - Not found.
+  - Ambiguous: two invoices with the same invoice number after a mid-flight `numberFormat` change.
+
+### Critical files modified
+
+- `packages/cli/src/commands/init.ts` — sections + helpers.
+- `packages/cli/src/commands/setup.ts` (new).
+- `packages/cli/src/commands/new.ts` — customer address prompt.
+- `packages/cli/src/commands/list.ts` — short id column + `--full-id`.
+- `packages/cli/src/resolver.ts` (new) + `resolver.test.ts` (new).
+- `packages/cli/src/commands/send.ts` / `mark.ts` / `clone.ts` — use resolver.
+- `packages/cli/src/index.ts` — register `setup`.
+
+### Verification
+
+Automated:
+
+- `pnpm test` adds ~5–8 tests for the resolver. Expect ~180+ total.
+- `pnpm build` + `pnpm lint` clean.
+
+Manual smoke (Phase 4.6 walkthrough in `TESTING.md`):
+
+1. Fresh `INVOICE_HOME`. `invoice init` happy path covering every optional section. After company info, the number-format prompt suggests `{COMPANY3}-{YYYY}-{SEQ}`. `invoice config get company` confirms the fields landed.
+2. Re-run `invoice setup bank` and change an IFSC value. `invoice config get bank.ifsc` reflects it.
+3. `invoice setup mail` sets a custom `subjectTemplate` with placeholders → next `invoice send <id>` uses it.
+4. `invoice new` with a multi-line customer address; verify Billed To shows the lines in the rendered email body.
+5. `invoice list` shows a short id column; the first 8 chars match `invoice config get` against the row's UUID.
+6. `invoice send <short-id>` works; `invoice send <invoice-number>` works; `invoice send <full-uuid>` still works.
+7. Two invoices manually share a number → `invoice send <number>` errors with both matches.
+
+### Out of scope (defer)
+
+- `invoice edit <id>` mutating other fields after creation — separate concern.
+- Shell tab-completion for ids/numbers — out-of-band.
+- Bulk operations (`invoice send --all-drafts-for <customer>`).
+
 ## Out of scope (explicit non-goals)
 
 - Any hosted/cloud component beyond the mail provider itself.

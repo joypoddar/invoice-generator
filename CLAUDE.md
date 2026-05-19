@@ -47,12 +47,14 @@ invoice-generator/
 
 ## Phase status
 
-The plan lays out 9 phases. **Phases 1 and 4 are complete** — the `invoice` binary ships:
+The plan lays out 9 phases plus mid-phase polishes. **Phases 1, 4, 4.5, and 4.6 are complete** — the `invoice` binary ships:
 
 - **Phase 1 (CLI MVP)** — `init / config / whoami / new / list / send / sync / mark`.
-- **Phase 4 (Customer-facing invoice + recurring billing)** — branding-driven HTML rendering matching the Creowis design, `Intl`-based date/currency formatting, print CSS, customizable subject line, `invoice clone`, `invoice template (save/list/use/delete)`, `invoice recurring (create/list/show/delete/generate/schedule-help)`.
+- **Phase 4 (Customer-facing invoice + recurring billing)** — branding-driven HTML rendering, `Intl`-based date/currency formatting, print CSS, customizable subject line, `invoice clone`, `invoice template (save/list/use/delete)`, `invoice recurring (create/list/show/delete/generate/schedule-help)`.
+- **Phase 4.5 (PDF design parity)** — 6-column line-item table with per-line IGST, signature block (opt-in image embedding), MMM DD YYYY + ISO8601 + DD MMM YYYY date formats, `{COMPANY3}` template variable, configurable line-item header.
+- **Phase 4.6 (Onboarding ergonomics + quick id access)** — `invoice init` extended with optional sections, `invoice setup <section>` for incremental edits, customer-address prompt in `invoice new`, short id column in `invoice list`, resolver accepting UUID / short prefix / invoice number for `send / mark / clone`.
 
-**155 unit tests** pass across `shared` (`invoice`, `config-schema`, `email-format`), `core` (`sqlite-store`, `ingest`, `recurring`), and `cli` (`email`, `format`, `clone`, `templates`). Manual end-to-end verification (PLAN.md § "Verification" + `TESTING.md` § "Phase 4 verification") is the remaining item before Phase 5 starts in earnest.
+**186 unit tests** pass across `shared`, `core`, and `cli`. Manual end-to-end verification (`TESTING.md` § "Phase 4 verification" + "Phase 4.6 verification") is the remaining item before Phase 5 starts in earnest.
 
 **Active phase: Phase 5 (Hono dashboard MVP)** — local server bound to `127.0.0.1`, server-rendered JSX, vanilla-JS sync/paid-toggle, no Next.js, no bundler. See PLAN.md § "Execution phases" → Phase 5 for the precise scope. **Phase 2 (CLI productivity — filter flags, CSV export, preview)** is still open and can land in parallel.
 
@@ -82,6 +84,25 @@ The plan lays out 9 phases. **Phases 1 and 4 are complete** — the `invoice` bi
 - **Logo deferred to Phase 5** — `branding.logoUrl` is in the schema but the renderer ignores it.
 - **`invoice config.cli.openPdfAfterPreview` config key name** is from the v1 plan and now misleading (no PDFs). Phase 3 polish should rename to `cli.openBrowserAfterPreview` once Phase 5 wires the dashboard URL.
 - **Test files included in tsconfig** (no longer in `exclude`) so the IDE's TS server applies the project's types when typechecking test files. Side effect: `dist/` contains `.test.js`/`.test.d.ts` — harmless (the package exports field only exposes `./` → `./dist/index.js`).
+
+### Phase-4.5 deviations
+
+- **`LineItem.taxRate?: number`** added — per-line IGST possible; falls back to invoice-level `taxRate` at render time. Total IGST in the totals block is summed from the lines (always reconciles with the column).
+- **`branding.signatureUrl` + `branding.signatoryLabel`** added to schema. The renderer reads a local file path via base64-embed; http(s)://  URLs pass through; `file://` is supported. Unreadable path → block silently omitted. `signatoryLabel` defaults to `"Authorised Signatory"` at render time when undefined.
+- **`{COMPANY3}` template variable** in `renderInvoiceNumber` — first 3 non-whitespace chars of `config.company.name`, uppercased. Used by every callsite (`new`, `clone`, `template use`, `recurring generate`). Function signature gained an optional 4th `companyName` arg.
+- **`DEFAULT_FIELDS` grew to 25** with `lineItemHeader` (default "Description"). The renderer reads it for the line-item table column header.
+- **Mixed-precision Rate column** via `formatCurrencyMaybeInt` (`₹55,000` for whole, `₹55,000.50` for fractional). All other currency cells use `formatCurrency` (always 2 decimals).
+- **PDF generation deliberately not added back** despite the target being a PDF — we still emit HTML and rely on `window.print()` for paper output. React Email migration is the still-deferred Phase 4.5b.
+
+### Phase-4.6 deviations
+
+- **`invoice init` reordered** — Identity → Company info (optional) → Invoice number format (defaults to `{COMPANY3}-{YYYY}-{SEQ}` when company.name set) → SMTP → IMAP → Recipients → Optional sections (bank / tax / mail / branding / line-header). Company name is captured early specifically so the number-format default can use `{COMPANY3}`.
+- **Setup helpers live in `init.ts`** (exported) — `setupCompany`, `setupBank`, `setupTax`, `setupMail`, `setupBranding`, `setupLineItemHeader`, `setupNumberFormat`, plus `readMultiline` utility. The new `setup.ts` imports them. Co-located to avoid circular deps.
+- **`branding.signatoryLabel`** Zod schema changed from `.default('Authorised Signatory')` to `.optional()`. The default-with-value made the type `string` (always present), which forced workarounds in `setupBranding` when the user clears the field. Renderer already falls back to `'Authorised Signatory'` when undefined, so optional schema is cleaner. **Existing configs that have `signatoryLabel` set keep their value**; nothing to migrate.
+- **Resolver accepts 3 ref types** (`packages/cli/src/resolver.ts`) — full UUID, ≥4-char hex prefix, or invoice number. Short prefix has a 4-char minimum to avoid `"1"` matching everything; invoice number lookup bypasses the length guard so short numeric numbers like `"42"` still work. Ambiguity produces a friendly listing.
+- **`exitWithResolveError(ref, result)` returns `never`** so TS narrows `result.ok` to `true` after the guard. Used in `send` / `mark` / `clone`.
+- **`mail.recipients` is init-only**: `invoice setup mail` updates subject/body/replyTo but explicitly overlays existing recipients back into the saved object. Recipients aren't part of the mail setup flow because they were already collected via the dedicated recipients prompt at init time.
+- **`invoice list` Id column** — first 8 chars by default; `--full-id` shows the 36-char UUID. Short-id mode appends a footer hint about the resolver.
 
 When you complete a phase, update this section so the next session knows where things stand.
 
