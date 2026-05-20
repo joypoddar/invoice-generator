@@ -534,7 +534,13 @@ export async function setupTax(existing: TaxSection = {}): Promise<TaxSection> {
 export async function setupMail(existing: Config['mail']): Promise<Config['mail']> {
   console.log('\n--- Mail (subject line, body template, reply-to) ---');
   console.log(
-    '  Placeholders: {invoiceNumber}, {customerName}, {total}, {currency}, {issueDate}, {dueDate}',
+    '  Placeholders: {invoiceNumber} {customerName} {customerEmail} {total} {currency}',
+  );
+  console.log(
+    '                {issueDate} {dueDate} {userName} {userEmail} {companyName}',
+  );
+  console.log(
+    '                {month} {monthShort} {monthNum} {year} {yearShort} {day} {dayPadded}',
   );
   const subjectTemplate = await input({
     message: 'Subject template (empty for default):',

@@ -65,6 +65,61 @@ describe('renderSubject', () => {
     ];
     expect(renderSubject('{total}', inv)).toBe('199.91');
   });
+
+  it('substitutes sender and customer identity placeholders', () => {
+    const inv = makeInvoice();
+    inv.default.fromName = 'Joy';
+    inv.default.fromEmail = 'joy@creowis.com';
+    inv.default.companyName = 'Creowis';
+    inv.default.customerEmail = 'pay@acme.com';
+    const out = renderSubject(
+      '{userName} <{userEmail}> from {companyName} → {customerEmail}',
+      inv,
+    );
+    expect(out).toBe('Joy <joy@creowis.com> from Creowis → pay@acme.com');
+  });
+
+  it('renders date pieces parsed from issueDate', () => {
+    const inv = makeInvoice();
+    inv.default.issueDate = '2026-05-17';
+    const out = renderSubject(
+      '{month} {monthShort} {monthNum} {year} {yearShort} {day} {dayPadded}',
+      inv,
+    );
+    expect(out).toBe('May May 05 2026 26 17 17');
+  });
+
+  it('zero-pads single-digit day and month', () => {
+    const inv = makeInvoice();
+    inv.default.issueDate = '2026-01-07';
+    expect(renderSubject('{monthNum}-{dayPadded}', inv)).toBe('01-07');
+    expect(renderSubject('{day}', inv)).toBe('7');
+  });
+
+  it('renders the plan example template correctly', () => {
+    const inv = makeInvoice();
+    inv.default.fromName = 'Joy';
+    inv.default.issueDate = '2026-04-28';
+    expect(renderSubject("Invoice - {userName} - {monthShort}'{yearShort}", inv)).toBe(
+      "Invoice - Joy - Apr'26",
+    );
+  });
+
+  it('renders empty date pieces when issueDate is missing or malformed', () => {
+    const inv = makeInvoice();
+    delete inv.default.issueDate;
+    expect(renderSubject('[{month}/{year}]', inv)).toBe('[/]');
+    inv.default.issueDate = 'not-a-date';
+    expect(renderSubject('[{month}/{year}]', inv)).toBe('[/]');
+  });
+
+  it('is timezone-stable for the date pieces', () => {
+    const inv = makeInvoice();
+    inv.default.issueDate = '2026-05-01';
+    // Even at midnight UTC (which is the previous day in negative-offset zones)
+    // the rendered month/day reflect what the user typed.
+    expect(renderSubject('{month} {day}', inv)).toBe('May 1');
+  });
 });
 
 describe('subjectFor (default)', () => {

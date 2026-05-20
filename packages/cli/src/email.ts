@@ -49,8 +49,8 @@ export interface RenderOpts {
   currencyFormat?: string;
   /**
    * If set, used as the email subject after placeholder substitution.
-   * Placeholders: {invoiceNumber}, {customerName}, {total}, {currency},
-   * {issueDate}, {dueDate}. Falls back to subjectFor(invoice) when undefined.
+   * See `renderSubject` in `@invoice/shared` for the full placeholder list.
+   * Falls back to subjectFor(invoice) when undefined.
    */
   subjectTemplate?: string;
 }

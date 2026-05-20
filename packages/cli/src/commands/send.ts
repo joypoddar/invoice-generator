@@ -25,7 +25,7 @@ export function register(program: Command): void {
     .option('--bcc <email...>', 'override bcc recipients')
     .option(
       '--subject <text>',
-      'override subject template for this send (placeholders: {invoiceNumber}, {customerName}, {total}, {currency}, {issueDate}, {dueDate})',
+      'override subject template for this send (see `invoice setup mail` for the full placeholder list)',
     )
     .option('-y, --yes', 'skip the confirmation prompt')
     .action(runSend);
