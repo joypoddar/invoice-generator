@@ -6,7 +6,7 @@ import { SqliteStore } from '@invoice/core';
 import { dbPath, loadConfigSafe, saveConfig } from '../store.js';
 import { readMultiline } from './init.js';
 import { clearDraft, draftExists, loadDraft, saveDraft } from '../drafts.js';
-import { getCustomer, listCustomers } from '../customers.js';
+import { findCustomerSlug, getCustomer, listCustomers } from '../customers.js';
 
 interface NewDraft {
   invoiceId?: string;
@@ -23,14 +23,19 @@ interface NewDraft {
   custom?: Record<string, unknown>;
 }
 
+interface NewOptions {
+  customer?: string;
+}
+
 export function register(program: Command): void {
   program
     .command('new')
     .description('Create a new invoice (interactive)')
+    .option('--customer <name-or-slug>', 'pre-pick a saved customer (skips the picker)')
     .action(runNew);
 }
 
-async function runNew(): Promise<void> {
+async function runNew(opts: NewOptions): Promise<void> {
   const config = loadConfigSafe();
   if (!config) {
     console.error('Not configured. Run `invoice init` first.');
@@ -78,6 +83,24 @@ async function runNew(): Promise<void> {
   // Customer picker: only when not resuming past this step. A non-empty
   // `draft.customerName` means the prior session had already chosen.
   let customerSlug: string | undefined = draft.customerSlug;
+  if (draft.customerName === undefined && opts.customer) {
+    const picked = getCustomer(config, opts.customer);
+    if (!picked) {
+      console.error(`No customer matching "${opts.customer}". Use \`invoice customer list\` to see saved customers.`);
+      process.exit(1);
+    }
+    customerSlug = findCustomerSlug(config, opts.customer) ?? undefined;
+    draft.customerName = picked.name;
+    draft.customerEmail = picked.email ?? '';
+    if (picked.address !== undefined) draft.customerAddress = picked.address;
+    persist({
+      customerSlug,
+      customerName: picked.name,
+      customerEmail: picked.email ?? '',
+      customerAddress: picked.address,
+    });
+    console.log(`  Using saved customer: ${picked.name}`);
+  }
   if (draft.customerName === undefined) {
     const saved = listCustomers(config);
     if (saved.length > 0) {

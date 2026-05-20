@@ -5,20 +5,14 @@ import { dbPath, loadConfigSafe } from '../store.js';
 
 const SHORT_ID_LEN = 8;
 
-interface ListOptions {
-  fullId?: boolean;
-}
-
 export function register(program: Command): void {
   program
-    .command('list')
-    .alias('ls')
-    .description('List invoices from the local database')
-    .option('--full-id', 'show the full 36-char UUID instead of the 8-char short id')
-    .action(runList);
+    .command('search <text>')
+    .description('Find invoices whose number, customer name, or raw JSON contains text')
+    .action(runSearch);
 }
 
-async function runList(opts: ListOptions): Promise<void> {
+async function runSearch(text: string): Promise<void> {
   const config = loadConfigSafe();
   if (!config) {
     console.error('Not configured. Run `invoice init` first.');
@@ -28,47 +22,31 @@ async function runList(opts: ListOptions): Promise<void> {
   const store = new SqliteStore(dbPath());
   let invoices: Invoice[];
   try {
-    invoices = await store.list();
+    invoices = await store.list({ text });
   } finally {
     store.close();
   }
 
   if (invoices.length === 0) {
-    console.log('No invoices yet. Create one with `invoice new`.');
+    console.log(`No invoices matching "${text}".`);
     return;
   }
 
-  const showFullId = !!opts.fullId;
   const rows = invoices.map((inv) => {
     const def = inv.default;
-    const id = showFullId ? inv.id : inv.id.slice(0, SHORT_ID_LEN);
     return [
-      id,
+      inv.id.slice(0, SHORT_ID_LEN),
       String(def.invoiceNumber ?? ''),
       String(def.customerName ?? ''),
       String(def.dueDate ?? ''),
       inv.status,
-      String(def.currency ?? '')
-        ? `${totalFor(inv).toFixed(2)} ${String(def.currency)}`
-        : totalFor(inv).toFixed(2),
+      `${totalFor(inv).toFixed(2)} ${String(def.currency ?? '')}`.trim(),
       inv.paymentStatus,
-      inv.sentAt ?? '-',
     ];
   });
-  const headers = [
-    showFullId ? 'Id (full)' : 'Id',
-    'Number',
-    'Customer',
-    'Due',
-    'Status',
-    'Total',
-    'Paid?',
-    'Sent',
-  ];
+  const headers = ['Id', 'Number', 'Customer', 'Due', 'Status', 'Total', 'Paid?'];
   console.log(renderTable(headers, rows));
-  if (!showFullId) {
-    console.log('\nUse the short id (first 8 chars), the full UUID, or the invoice number with `send`/`mark`/`clone`.');
-  }
+  console.log(`\n${invoices.length} match(es). Resolve any of them with \`send\`/\`mark\`/\`clone\`.`);
 }
 
 function renderTable(headers: string[], rows: string[][]): string {

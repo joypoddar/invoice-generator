@@ -13,6 +13,9 @@ import * as markCmd from './commands/mark.js';
 import * as cloneCmd from './commands/clone.js';
 import * as templateCmd from './commands/template.js';
 import * as recurringCmd from './commands/recurring.js';
+import * as lastCmd from './commands/last.js';
+import * as resendCmd from './commands/resend.js';
+import * as searchCmd from './commands/search.js';
 
 const program = new Command();
 
@@ -31,6 +34,9 @@ markCmd.register(program);
 cloneCmd.register(program);
 templateCmd.register(program);
 recurringCmd.register(program);
+lastCmd.register(program);
+resendCmd.register(program);
+searchCmd.register(program);
 
 await program.parseAsync().catch((err: unknown) => {
   console.error(err instanceof Error ? err.message : err);

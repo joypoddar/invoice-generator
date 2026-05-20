@@ -9,6 +9,7 @@ import { exitWithResolveError, resolveInvoice } from '../resolver.js';
 import { composeRecipients } from '../recipients.js';
 import { getCustomer, setCustomer, slugFor } from '../customers.js';
 import { setupCustomer } from './init.js';
+import { mostRecent } from '../recency.js';
 
 interface SendOptions {
   to?: string[];
@@ -16,6 +17,7 @@ interface SendOptions {
   bcc?: string[];
   subject?: string;
   yes?: boolean;
+  last?: boolean;
 }
 
 export type PerformSendOptions = SendOptions;
@@ -23,8 +25,9 @@ export type PerformSendStatus = 'sent' | 'aborted' | 'error';
 
 export function register(program: Command): void {
   program
-    .command('send <id>')
+    .command('send [id]')
     .description('Render and email an invoice (confirms recipients first; --yes to skip)')
+    .option('--last', 'send the most recently-created draft (no id arg needed)')
     .option('--to <email...>', 'override recipients (replaces config)')
     .option('--cc <email...>', 'override cc recipients')
     .option('--bcc <email...>', 'override bcc recipients')
@@ -36,19 +39,38 @@ export function register(program: Command): void {
     .action(runSend);
 }
 
-async function runSend(id: string, opts: SendOptions): Promise<void> {
+async function runSend(id: string | undefined, opts: SendOptions): Promise<void> {
   const config = loadConfigSafe();
   if (!config) {
     console.error('Not configured. Run `invoice init` first.');
     process.exit(1);
   }
 
+  if (!opts.last && !id) {
+    console.error('Pass an invoice id (or use --last to send the most recent draft).');
+    process.exit(1);
+  }
+  if (opts.last && id) {
+    console.error('Pass either an id or --last, not both.');
+    process.exit(1);
+  }
+
   const store = new SqliteStore(dbPath());
   let invoice: Invoice;
   try {
-    const result = await resolveInvoice(store, id);
-    if (!result.ok) exitWithResolveError(id, result);
-    invoice = result.invoice;
+    if (opts.last) {
+      const all = await store.list();
+      const draft = mostRecent(all, { drafts: true });
+      if (!draft) {
+        console.error('No drafts found. Create one with `invoice new`.');
+        process.exit(1);
+      }
+      invoice = draft;
+    } else {
+      const result = await resolveInvoice(store, id as string);
+      if (!result.ok) exitWithResolveError(id as string, result);
+      invoice = result.invoice;
+    }
   } finally {
     store.close();
   }

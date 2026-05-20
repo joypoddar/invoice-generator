@@ -39,6 +39,16 @@ export function getCustomer(config: Config, ref: string): CustomerData | null {
   return null;
 }
 
+/** Like getCustomer but returns the matching slug instead of the data. */
+export function findCustomerSlug(config: Config, ref: string): string | null {
+  if (config.customers[ref]) return ref;
+  const lower = ref.toLowerCase();
+  for (const [slug, customer] of Object.entries(config.customers)) {
+    if (customer.name.toLowerCase() === lower) return slug;
+  }
+  return null;
+}
+
 /**
  * Return a new config with the given customer record set. Caller is
  * responsible for calling `saveConfig(...)` on the result. Used by both
