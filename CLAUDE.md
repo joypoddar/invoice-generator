@@ -47,14 +47,15 @@ invoice-generator/
 
 ## Phase status
 
-The plan lays out 9 phases plus mid-phase polishes. **Phases 1, 4, 4.5, and 4.6 are complete** — the `invoice` binary ships:
+The plan lays out 9 phases plus mid-phase polishes. **Phases 1, 4, 4.5, 4.6, and 4.7 are complete** — the `invoice` binary ships:
 
 - **Phase 1 (CLI MVP)** — `init / config / whoami / new / list / send / sync / mark`.
 - **Phase 4 (Customer-facing invoice + recurring billing)** — branding-driven HTML rendering, `Intl`-based date/currency formatting, print CSS, customizable subject line, `invoice clone`, `invoice template (save/list/use/delete)`, `invoice recurring (create/list/show/delete/generate/schedule-help)`.
 - **Phase 4.5 (PDF design parity)** — 6-column line-item table with per-line IGST, signature block (opt-in image embedding), MMM DD YYYY + ISO8601 + DD MMM YYYY date formats, `{COMPANY3}` template variable, configurable line-item header.
 - **Phase 4.6 (Onboarding ergonomics + quick id access)** — `invoice init` extended with optional sections, `invoice setup <section>` for incremental edits, customer-address prompt in `invoice new`, short id column in `invoice list`, resolver accepting UUID / short prefix / invoice number for `send / mark / clone`.
+- **Phase 4.7 (UX flows)** — init welcome banner + Ctrl+C-safe draft persistence (also wired into `invoice new`), SMTP/IMAP retry loops on verify failure, customer directory at `config.customers` with `invoice customer save/list/show/delete`, picker in `invoice new`, `--customer` flag, customer-aware recipient composition (`composeRecipients(config, invoice, opts)`), 17-placeholder subject templates (sender identity + date pieces), `--send` chaining on clone / template-use / recurring-generate, save-on-send prompt, and productivity shortcuts (`invoice last [--drafts]`, `invoice send --last`, `invoice resend`, `invoice search`, `invoice ls` alias).
 
-**186 unit tests** pass across `shared`, `core`, and `cli`. Manual end-to-end verification (`TESTING.md` § "Phase 4 verification" + "Phase 4.6 verification") is the remaining item before Phase 5 starts in earnest.
+**227 unit tests** pass across `shared`, `core`, and `cli`. Manual end-to-end verification (`TESTING.md` § "Phase 4 verification" + "Phase 4.6 verification" + "Phase 4.7 verification") is the remaining item before Phase 5 starts in earnest.
 
 **Active phase: Phase 5 (Hono dashboard MVP)** — local server bound to `127.0.0.1`, server-rendered JSX, vanilla-JS sync/paid-toggle, no Next.js, no bundler. See PLAN.md § "Execution phases" → Phase 5 for the precise scope. **Phase 2 (CLI productivity — filter flags, CSV export, preview)** is still open and can land in parallel.
 
@@ -88,7 +89,7 @@ The plan lays out 9 phases plus mid-phase polishes. **Phases 1, 4, 4.5, and 4.6 
 ### Phase-4.5 deviations
 
 - **`LineItem.taxRate?: number`** added — per-line IGST possible; falls back to invoice-level `taxRate` at render time. Total IGST in the totals block is summed from the lines (always reconciles with the column).
-- **`branding.signatureUrl` + `branding.signatoryLabel`** added to schema. The renderer reads a local file path via base64-embed; http(s)://  URLs pass through; `file://` is supported. Unreadable path → block silently omitted. `signatoryLabel` defaults to `"Authorised Signatory"` at render time when undefined.
+- **`branding.signatureUrl` + `branding.signatoryLabel`** added to schema. The renderer reads a local file path via base64-embed; http(s):// URLs pass through; `file://` is supported. Unreadable path → block silently omitted. `signatoryLabel` defaults to `"Authorised Signatory"` at render time when undefined.
 - **`{COMPANY3}` template variable** in `renderInvoiceNumber` — first 3 non-whitespace chars of `config.company.name`, uppercased. Used by every callsite (`new`, `clone`, `template use`, `recurring generate`). Function signature gained an optional 4th `companyName` arg.
 - **`DEFAULT_FIELDS` grew to 25** with `lineItemHeader` (default "Description"). The renderer reads it for the line-item table column header.
 - **Mixed-precision Rate column** via `formatCurrencyMaybeInt` (`₹55,000` for whole, `₹55,000.50` for fractional). All other currency cells use `formatCurrency` (always 2 decimals).
@@ -103,6 +104,20 @@ The plan lays out 9 phases plus mid-phase polishes. **Phases 1, 4, 4.5, and 4.6 
 - **`exitWithResolveError(ref, result)` returns `never`** so TS narrows `result.ok` to `true` after the guard. Used in `send` / `mark` / `clone`.
 - **`mail.recipients` is init-only**: `invoice setup mail` updates subject/body/replyTo but explicitly overlays existing recipients back into the saved object. Recipients aren't part of the mail setup flow because they were already collected via the dedicated recipients prompt at init time.
 - **`invoice list` Id column** — first 8 chars by default; `--full-id` shows the 36-char UUID. Short-id mode appends a footer hint about the resolver.
+
+### Phase-4.7 deviations
+
+- **`config.customers` lives inline in `config.json`** as `Record<slug, CustomerData>` (per user preference: "all information in a single config"). Atomic writes via `saveConfig`. ~200 bytes per entry; even 50 customers stays well under 10 KB. Zod schema in `packages/shared/src/config-schema.ts` declares it with `.default({})` so old configs keep parsing.
+- **`customerSlug` added to `DEFAULT_FIELDS`** — stored on `invoice.default.customerSlug` when the user picks a saved customer at `invoice new` time. Marks "linked to the directory" so the send pipeline can read customer-level recipient defaults via `getCustomer(config, slug)`. **Not backfilled post-save** when save-on-send creates a customer for an already-sent invoice — that would diverge from the JSON sidecar that already shipped.
+- **Save-on-send is gated** — `maybePromptSaveCustomer` skips when (a) the slug already resolves, OR (b) the customer's display name matches a directory entry case-insensitively, OR (c) the invoice has no customer name. Slug-collision (two different display names slugging to the same key) prints a skip notice rather than silently overwriting.
+- **`performSend` is the orchestrator boundary** (`packages/cli/src/commands/send.ts`). `invoice send`, `clone --send`, `template use --send`, `recurring generate --send`, and `invoice resend` all funnel through it. Returns `'sent' | 'aborted' | 'error'` — the caller decides whether to exit. `resend` hands it a `{...invoice, status: 'draft'}` clone so the already-sent guard doesn't bail, then the upsert overwrites the row with the new sent state.
+- **`recurring generate --send` re-loads config per iteration** so a save-on-send save in draft N is visible when checking draft N+1's customer. The whole batch keeps going if one send errors (so a single SMTP hiccup doesn't strand the rest).
+- **`composeRecipients(config, invoice, opts)` is a pure module** (`packages/cli/src/recipients.ts`) with its own unit tests. Precedence per field: CLI override → customer default (if non-empty) → global default. `bcc` skips the customer layer (customers carry no bcc field).
+- **Subject placeholders expanded from 6 → 17** (`packages/shared/src/email-format.ts`). Dictionary-driven replacement loop replaces the earlier 6-arm chain. Date pieces parse `issueDate` as UTC and format via `Intl.DateTimeFormat(..., timeZone: 'UTC')` so `2026-05-17` always says `May 17`, regardless of host TZ. Malformed dates → empty date pieces (no throw).
+- **Generic draft persistence** in `packages/cli/src/drafts.ts` (`loadDraft/saveDraft/clearDraft/draftExists`) — parametrized by name (`'init'`, `'new'`). Files at `~/.invoice/<name>.draft.json`, mode 0600. Both `invoice init` and `invoice new` persist after every section/prompt and clear on success.
+- **`findCustomerSlug(config, ref)`** mirrors `getCustomer` but returns the matching slug instead of the data — used by `invoice new --customer` to set `customerSlug` on the invoice. `getCustomer` left unchanged for backwards compatibility.
+- **`invoice send` argument is now `[id]` (optional)** — `--last` is the alternative. Mutually-exclusive validation prints a friendly error if both or neither is provided.
+- **`mostRecent(invoices, { drafts })`** in `packages/cli/src/recency.ts` — pure helper used by both `invoice last` and `invoice send --last`. Sort DESC: `issueDate`, then `sentAt` (drafts have null and sort last within an issueDate tie), then `invoiceNumber` lexicographically.
 
 When you complete a phase, update this section so the next session knows where things stand.
 
@@ -134,6 +149,18 @@ invoice list --overdue               # filter
 invoice mark <id> paid|unpaid
 invoice export csv --paid --out paid.csv
 invoice preview <id>
+
+# CLI (Phase 4.7 — productivity shortcuts)
+invoice last [--drafts]              # print the most-recent invoice
+invoice send --last                  # send the most-recent draft
+invoice new --customer "Acme Corp"   # skip the picker, pre-pick a saved customer
+invoice resend <id>                  # re-send an already-sent invoice
+invoice search <text>                # substring search across number/customer/raw JSON
+invoice ls                           # alias for `invoice list`
+invoice customer save|list|show|delete
+invoice clone <id> --send --yes      # chain create→send
+invoice template use <name> --send
+invoice recurring generate --send    # send each generated draft
 
 # CLI (Phase 5)
 invoice dashboard                    # spawn Hono on 127.0.0.1:3000
