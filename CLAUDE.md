@@ -47,15 +47,16 @@ invoice-generator/
 
 ## Phase status
 
-The plan lays out 9 phases plus mid-phase polishes. **Phases 1, 4, 4.5, 4.6, and 4.7 are complete** — the `invoice` binary ships:
+The plan lays out 9 phases plus mid-phase polishes. **Phases 1, 4, 4.5, 4.6, 4.7, and 4.8 are complete** — the `invoice` binary ships:
 
 - **Phase 1 (CLI MVP)** — `init / config / whoami / new / list / send / sync / mark`.
 - **Phase 4 (Customer-facing invoice + recurring billing)** — branding-driven HTML rendering, `Intl`-based date/currency formatting, print CSS, customizable subject line, `invoice clone`, `invoice template (save/list/use/delete)`, `invoice recurring (create/list/show/delete/generate/schedule-help)`.
 - **Phase 4.5 (PDF design parity)** — 6-column line-item table with per-line IGST, signature block (opt-in image embedding), MMM DD YYYY + ISO8601 + DD MMM YYYY date formats, `{COMPANY3}` template variable, configurable line-item header.
 - **Phase 4.6 (Onboarding ergonomics + quick id access)** — `invoice init` extended with optional sections, `invoice setup <section>` for incremental edits, customer-address prompt in `invoice new`, short id column in `invoice list`, resolver accepting UUID / short prefix / invoice number for `send / mark / clone`.
 - **Phase 4.7 (UX flows)** — init welcome banner + Ctrl+C-safe draft persistence (also wired into `invoice new`), SMTP/IMAP retry loops on verify failure, customer directory at `config.customers` with `invoice customer save/list/show/delete`, picker in `invoice new`, `--customer` flag, customer-aware recipient composition (`composeRecipients(config, invoice, opts)`), 17-placeholder subject templates (sender identity + date pieces), `--send` chaining on clone / template-use / recurring-generate, save-on-send prompt, and productivity shortcuts (`invoice last [--drafts]`, `invoice send --last`, `invoice resend`, `invoice search`, `invoice ls` alias).
+- **Phase 4.8 (per-customer invoice numbering + drop redundant re-prompts)** — saved customers carry optional `numberFormat` + their own `nextSeq` counter; when a customer is picked at `invoice new` (or detected via `customerSlug` on a clone/template/recurring source), that format/counter wins. `{COMPANY3}` inside a customer's format resolves to the customer's name initials. Picking a saved customer (or resuming a draft past the customer step) **skips** the name/email/address prompts entirely — they no longer re-prompt with the "Press Enter on Line 1 to keep" hint that caused users to accidentally overwrite saved addresses.
 
-**227 unit tests** pass across `shared`, `core`, and `cli`. Manual end-to-end verification (`TESTING.md` § "Phase 4 verification" + "Phase 4.6 verification" + "Phase 4.7 verification") is the remaining item before Phase 5 starts in earnest.
+**237 unit tests** pass across `shared`, `core`, and `cli`. Manual end-to-end verification (`TESTING.md` § "Phase 4 verification" + "Phase 4.6 verification" + "Phase 4.7 verification" + "Phase 4.8 verification") is the remaining item before Phase 5 starts in earnest.
 
 **Active phase: Phase 5 (Hono dashboard MVP)** — local server bound to `127.0.0.1`, server-rendered JSX, vanilla-JS sync/paid-toggle, no Next.js, no bundler. See PLAN.md § "Execution phases" → Phase 5 for the precise scope. **Phase 2 (CLI productivity — filter flags, CSV export, preview)** is still open and can land in parallel.
 
@@ -118,6 +119,17 @@ The plan lays out 9 phases plus mid-phase polishes. **Phases 1, 4, 4.5, 4.6, and
 - **`findCustomerSlug(config, ref)`** mirrors `getCustomer` but returns the matching slug instead of the data — used by `invoice new --customer` to set `customerSlug` on the invoice. `getCustomer` left unchanged for backwards compatibility.
 - **`invoice send` argument is now `[id]` (optional)** — `--last` is the alternative. Mutually-exclusive validation prints a friendly error if both or neither is provided.
 - **`mostRecent(invoices, { drafts })`** in `packages/cli/src/recency.ts` — pure helper used by both `invoice last` and `invoice send --last`. Sort DESC: `issueDate`, then `sentAt` (drafts have null and sort last within an issueDate tie), then `invoiceNumber` lexicographically.
+
+### Phase-4.8 deviations
+
+- **`{COMPANY3}` is context-dependent** — it resolves from whatever `companyName` the caller passes to `renderInvoiceNumber`. Callers using a customer's `numberFormat` pass `customer.name`; callers using the global format pass `config.company.name`. Same placeholder, two data sources. Old global-format usage is untouched; the new per-customer path lights up automatically when a customer has a `numberFormat` set.
+- **Per-customer counter lives at `config.customers[<slug>].nextSeq`** (defaults to 1 via Zod). Customers without `numberFormat` still carry the field, but it's only bumped when the customer's format is actually consulted. Global `config.invoice.nextSeq` continues to govern format-less customers and the `+ New customer` / no-saved-customer paths.
+- **`resolveNumberSpec(config, customerSlug)`** in `packages/cli/src/invoice-number.ts` is the single decision point. Returns `{ format, seq, companyName, customerSlug? }`. The presence of `customerSlug` in the result tells the caller which counter to bump. Used by `new`, `clone`, `template use`, and `recurring generate`.
+- **`recurring generate` accumulates per-customer counter deltas** in an in-memory `Record<slug, number>` alongside the existing `mutableNextSeq`. One `saveConfig` at the end via `applySeqUpdates(config, nextSeq, customerSeqs)` writes both. A customer that was deleted between schedule creation and `generate` falls back to the global counter cleanly (no crash, no spurious customer entries created).
+- **`invoice new` defers number computation to after the customer step.** Source order is now: dates + id → customer pick/manual → per-field prompts → `resolveNumberSpec` → render. The `New invoice: <number>` print moves down accordingly. Resumes still reuse `draft.invoiceNumber` (no double bump).
+- **Customer-detail prompts are now skip-if-known** — `const customerName = draft.customerName ?? await input(...)`. When a customer is picked, `applyPickedCustomer` populates `draft.customerName/customerEmail/customerAddress` _only for fields the customer record has_, so missing fields still get prompted. This avoids the silent-overwrite class of bugs the multi-line "Press Enter to keep" hint enabled.
+- **`bumpCustomerSeq(config, slug)`** is a small immutable helper on `customers.ts`. Returns the same config if the slug doesn't exist (defensive — no-op rather than throw).
+- **Existing configs migrate automatically.** Saved customers without `nextSeq` get `1` via Zod default; `numberFormat` stays `.optional()`. No migration command needed.
 
 When you complete a phase, update this section so the next session knows where things stand.
 

@@ -1333,6 +1333,167 @@ export async function setupCustomer(prefill?: Partial<CustomerData>): Promise<Cu
 - Importing customers from CSV — niche; defer.
 - Tab completion for customer names — Phase 3 polish.
 
+## Phase 4.8 — Per-customer invoice numbering + drop the redundant re-prompts
+
+### Context
+
+Two small but related problems surfaced from the first real `invoice new` run after Phase 4.7 shipped:
+
+1. **`{COMPANY3}` is the wrong scope** for the actual workflow. The user — who bills under multiple customer entities rather than a single sender brand — leaves `config.company.name` blank. The global `numberFormat = "{COMPANY3}-{YYYY}-{SEQ}"` then renders as `-2026-0001`. The information that _should_ drive the prefix is the **customer being billed**, not the sender.
+2. **Picking a saved customer doesn't actually skip the customer prompts.** After choosing "Crewis" from the picker, `invoice new` still asks for customer name (pre-filled "Crewis" — user has to Enter through), email, and address. The multi-line address prompt prints `Press Enter on Line 1 to keep, or type to replace (empty line ends)` which the user misread, typing `Consulting` as a line of address and silently overwriting the saved value. The fix isn't a clearer hint; the fix is **don't ask in the first place**.
+
+A second piece of confusion the user raised: "verify if customer creation is happening during invoice new". Confirming: it isn't. `invoice new` reads `config.customers` but doesn't write it. Customer rows are created via `invoice customer save`, the optional-section in `invoice init`, or the save-on-send prompt after a successful `invoice send` (Step 6 of Phase 4.7).
+
+### Decisions confirmed
+
+- **Per-customer `numberFormat`**: each saved customer optionally carries its own format string. When set, that customer's invoices use it; otherwise fall back to `config.invoice.numberFormat`. Matches the user's wording: "make invoice number a part of the billed company details."
+- **Per-customer `nextSeq`**: each customer carries its own counter so Acme is `ACME-2026-0001/0002/0003` and Beta is `BETA-2026-0001/0002/0003`. Independent counters; numbers tell a clean per-customer story. Customers without a `numberFormat` set still share the global counter (no per-customer counter spun up for them).
+- **`{COMPANY3}` semantics**: inside a _customer's_ `numberFormat`, `{COMPANY3}` resolves to the **customer's** name initials (first 3 non-whitespace chars, uppercased). Inside the _global_ `numberFormat`, it still resolves to `config.company.name` as today. Same placeholder, different contextual data source — picked automatically by the caller passing the right `companyName` arg to `renderInvoiceNumber`. No new placeholder, no semantics shift to existing global usage.
+- **Saved-customer prompts**: when a customer is picked (via picker or `--customer` flag) OR when a resumed draft already has those fields, the name/email/address prompts in `invoice new` are skipped entirely. No more "Press Enter on Line 1 to keep" — the value is just used. To override per-invoice the user can pick "+ New customer" and type fresh; to edit the saved record they use `invoice customer save --force`.
+- **Migration**: existing saved customers (no `numberFormat` / `nextSeq` fields) parse cleanly via Zod defaults — `numberFormat` stays `.optional()`, `nextSeq` defaults to `1`. No migration step.
+
+### Step 1 — Customer schema: numberFormat + nextSeq
+
+**Files**:
+
+- `packages/shared/src/config-schema.ts` — extend the `customers` record value with:
+  ```ts
+  numberFormat: z.string().optional(),
+  nextSeq: z.number().int().positive().default(1),
+  ```
+- `packages/cli/src/customers.ts` — add `bumpCustomerSeq(config, slug): Config` that increments `config.customers[slug].nextSeq` and returns a new config. Pure; caller saves.
+- Tests in `packages/cli/src/customers.test.ts`:
+  - Default-from-empty: a customer parsed with no `nextSeq` field gets `nextSeq=1`.
+  - `bumpCustomerSeq` increments and is immutable on the input.
+
+**Checkpoint**: `pnpm test` green; existing customer configs still parse.
+
+### Step 2 — Number resolution helper (used by all four generators)
+
+**File** (new): `packages/cli/src/invoice-number.ts`:
+
+```ts
+export interface NumberSpec {
+  format: string;
+  seq: number;
+  companyName?: string;
+  /** Set when the format came from a customer record; used by callers to know
+   *  which counter to bump after the upsert succeeds. */
+  customerSlug?: string;
+}
+
+export function resolveNumberSpec(config: Config, customerSlug: string | undefined): NumberSpec;
+```
+
+Logic:
+
+- If `customerSlug` is set AND `config.customers[customerSlug]?.numberFormat` is non-empty: return `{ format: customer.numberFormat, seq: customer.nextSeq, companyName: customer.name, customerSlug }`.
+- Otherwise: return `{ format: config.invoice.numberFormat, seq: config.invoice.nextSeq, companyName: config.company.name }` (no `customerSlug` in the result — global counter applies).
+
+Tests in `packages/cli/src/invoice-number.test.ts`:
+
+- No customer → global spec.
+- Customer with `numberFormat` set → customer spec; `companyName` = customer.name.
+- Customer without `numberFormat` → global spec (falls through).
+- Unknown slug → global spec.
+
+**Checkpoint**: 4 new unit tests green.
+
+### Step 3 — `invoice new` rewires + drops redundant re-prompts
+
+**File**: `packages/cli/src/commands/new.ts`. Two surgical changes:
+
+1. **Move the invoice-number computation to AFTER the customer step.** Currently lines 56–74 compute `invoiceNumber` before the picker. Move that block down so it runs once we know `customerSlug`. Use `resolveNumberSpec` to pick format+seq.
+
+2. **Skip the name/email/address prompts when the data already exists.** Currently lines 135–147 always run `input(...)` even after a picker hit. Wrap each prompt:
+
+   ```ts
+   const customerName =
+     draft.customerName ?? (await input({ message: 'Customer name:', required: true }));
+   const customerEmail =
+     draft.customerEmail ?? (await input({ message: 'Customer email:', default: '' }));
+   const customerAddress =
+     draft.customerAddress ?? (await readMultiline('Customer address (optional)', undefined));
+   ```
+
+   When a customer is picked, the picker writes to draft; subsequent fallbacks see the value and skip the prompt entirely. When the picker path runs `"+ New customer"` or there are no saved customers, the prompts run as fresh input (no pre-fill — the `Press Enter on Line 1` confusion goes away because there's no value to "keep"). When resuming from a draft, the values are already there, so prompts skip — same end state, same UX.
+
+3. **Bump the right counter at the end.** After `store.upsert(invoice)` succeeds, instead of unconditionally `saveConfig({...config, invoice: { ...config.invoice, nextSeq: config.invoice.nextSeq + 1 }})`:
+   - If the number came from the customer's format (`spec.customerSlug` set), call `bumpCustomerSeq(config, spec.customerSlug)` and save that result.
+   - Else bump the global counter as today.
+
+**Checkpoint**: `invoice new` happy paths:
+
+- Pick saved customer with `numberFormat="ACME-{COMPANY3}-{SEQ}"` + `nextSeq=5`: invoice number is `ACME-ACM-0005`, customer's `nextSeq` advances to 6, global `nextSeq` untouched.
+- Pick saved customer with no `numberFormat`: uses global format + global seq (today's behavior).
+- "+ New customer" path: uses global format + global seq; no prompts pre-filled; the address prompt asks "Line 1:" without the "press Enter to keep" hint.
+- Resume after Ctrl+C: customer name/email/address from draft used silently; line-items prompt resumes.
+
+### Step 4 — Apply the same number resolution to `clone`, `template use`, `recurring generate`
+
+**Files**:
+
+- `packages/cli/src/commands/clone.ts` — before computing `invoiceNumber`, read `customerSlug` from `source.default.customerSlug`, call `resolveNumberSpec(config, customerSlug)`, render the number from that, and bump the right counter after `store.upsert`.
+- `packages/cli/src/commands/template.ts` (`runUse`) — same: read `customerSlug` from `template.default.customerSlug`.
+- `packages/cli/src/commands/recurring.ts` (`runGenerate`) — in the inner per-recurring loop, look up the source (invoice or template) once, extract its `customerSlug`, and use `resolveNumberSpec`. The loop bumps `mutableNextSeq` for the global path; for the per-customer path, bump the customer record after each draft (in-memory `mutableCustomers: Record<slug, number>` accumulator that mirrors `mutableNextSeq`, then a single `saveConfig` at the end merges both).
+
+**Checkpoint**:
+
+- `invoice clone <id>` on an invoice billed to Acme: new invoice number uses Acme's format/seq, Acme's `nextSeq` advances, global untouched.
+- `invoice recurring generate` for a monthly Acme schedule that missed 3 months: produces 3 drafts numbered `ACME-...-0005`, `ACME-...-0006`, `ACME-...-0007`; Acme's `nextSeq` ends at 8.
+
+### Step 5 — Setup-side: collect `numberFormat` + `nextSeq` when creating/editing a customer
+
+**File**: `packages/cli/src/commands/init.ts` — extend `setupCustomer(prefill?)`:
+
+- After the existing 6 prompts (name → email → address → phone → defaultRecipientTo → defaultRecipientCc), add:
+  - `confirm({ message: 'Customize invoice number format for this customer?', default: false })`. If no, return what we have.
+  - If yes: `input({ message: 'Number format (use {SEQ}/{YYYY}/{MM}/{DD}/{COMPANY3}):', default: prefill?.numberFormat ?? '' })`. Hint that `{COMPANY3}` here = the customer's name initials.
+  - `input({ message: 'Starting sequence:', default: String(prefill?.nextSeq ?? 1), validate: positive-int })`.
+
+No changes needed to `invoice customer save` itself (it already delegates to `setupCustomer`). No changes needed to the picker UX in `invoice new`.
+
+**Checkpoint**: `invoice customer save` walks the new prompts; `invoice config get customers.acme.numberFormat` shows the saved value.
+
+### Step 6 — Verification + housekeeping
+
+**Run**:
+
+- `pnpm build && pnpm test && pnpm lint` clean. Expect ~235 tests (Step 1 +2, Step 2 +4 = +6 unit tests).
+
+**Manual smoke (Phase 4.8 verification section in `TESTING.md`)**:
+
+- Save a customer with `numberFormat="ACME-{YYYY}-{SEQ}"` + `nextSeq=42`. `invoice new --customer acme` → number is `ACME-2026-0042`. Customer's `nextSeq` is now 43. Global `config.invoice.nextSeq` unchanged.
+- Save a second customer with `numberFormat="BETA-{YYYY}-{SEQ}"`. Bill both customers alternately: numbers stay separate.
+- Pick a saved customer in `invoice new` → name/email/address prompts do NOT appear; the line-items prompt comes next directly. Confirm the multiline "Press Enter on Line 1 to keep" hint is gone.
+- `invoice clone <acme-id>` produces an `ACME-...` number, not the global format.
+- `invoice recurring generate` for a customer-scoped recurring uses that customer's counter.
+
+**Update**:
+
+- `CLAUDE.md` — flip phase status to "Phase 4.8 complete"; record deviations (`{COMPANY3}` is context-dependent based on which format owns the call, per-customer counters live in `config.customers[slug].nextSeq`).
+- `TESTING.md` — new P4.8 section per above.
+
+### Critical files to modify
+
+- `packages/shared/src/config-schema.ts` (add `numberFormat?` + `nextSeq` to customer record)
+- `packages/cli/src/customers.ts` (add `bumpCustomerSeq`)
+- `packages/cli/src/invoice-number.ts` (NEW — `resolveNumberSpec` helper + tests)
+- `packages/cli/src/commands/new.ts` (defer number computation, drop redundant prompts, bump right counter)
+- `packages/cli/src/commands/clone.ts` (use `resolveNumberSpec`)
+- `packages/cli/src/commands/template.ts` (use `resolveNumberSpec` in `runUse`)
+- `packages/cli/src/commands/recurring.ts` (use `resolveNumberSpec` in `runGenerate`, track per-customer mutable counters across the batch)
+- `packages/cli/src/commands/init.ts` (extend `setupCustomer` with number-format prompts)
+- `CLAUDE.md`, `TESTING.md` (housekeeping)
+
+### Out of scope (deliberately)
+
+- A new `{CUSTOMER3}` placeholder — `{COMPANY3}` already does the right thing in the customer-format context.
+- Editing the `--customer` flag's lookup logic — `findCustomerSlug` already handles slug-or-name.
+- Letting the customer's `numberFormat` reference fields not currently supported by `renderInvoiceNumber` (e.g., `{CUSTOMER_FULL}`) — the existing 5 placeholders are sufficient.
+- Migrating existing global-format invoices to a per-customer counter retroactively. Old invoices keep their old number (UUID is the real key; numbers are display-only).
+- Showing a `numberFormat` column in `invoice customer list` — would clutter the table. Use `invoice customer show <ref>` to see it.
+
 ## Out of scope (explicit non-goals)
 
 - Any hosted/cloud component beyond the mail provider itself.
