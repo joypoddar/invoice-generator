@@ -29,8 +29,28 @@ describe('ConfigSchema', () => {
     expect(parsed.dashboard.port).toBe(3000);
     expect(parsed.llm.provider).toBe('disabled');
     expect(parsed.git.enabled).toBe(false);
-    expect(parsed.mail.recipients.cc).toEqual([]);
-    expect(parsed.mail.recipients.bcc).toEqual([]);
+    expect(parsed.mail?.recipients.cc).toEqual([]);
+    expect(parsed.mail?.recipients.bcc).toEqual([]);
+  });
+
+  it('parses a receive-only config that has neither smtp nor mail', () => {
+    const receiveOnly = {
+      name: 'Account Head',
+      email: 'ah@creowis.com',
+      imap: {
+        host: 'imap.gmail.com',
+        port: 993,
+        user: 'hello@creowis.com',
+        folder: 'INBOX',
+      },
+    };
+    const result = ConfigSchema.safeParse(receiveOnly);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.smtp).toBeUndefined();
+      expect(result.data.mail).toBeUndefined();
+      expect(result.data.imap.folder).toBe('INBOX');
+    }
   });
 
   it('fails on missing essential keys', () => {

@@ -66,11 +66,15 @@ export const ConfigSchema = z.object({
     )
     .default({}),
 
-  smtp: z.object({
-    host: z.string().min(1),
-    port: z.number().int().positive(),
-    user: z.string().min(1),
-  }),
+  // Optional: only present when the install will send invoices. A receive-only
+  // install (account head / inbox manager) skips this block at init time.
+  smtp: z
+    .object({
+      host: z.string().min(1),
+      port: z.number().int().positive(),
+      user: z.string().min(1),
+    })
+    .optional(),
 
   imap: z.object({
     host: z.string().min(1),
@@ -79,16 +83,20 @@ export const ConfigSchema = z.object({
     folder: z.string().min(1),
   }),
 
-  mail: z.object({
-    recipients: z.object({
-      to: z.array(z.string().email()).min(1),
-      cc: z.array(z.string().email()).default([]),
-      bcc: z.array(z.string().email()).default([]),
-    }),
-    subjectTemplate: z.string().optional(),
-    bodyTemplate: z.string().optional(),
-    replyTo: z.string().email().optional(),
-  }),
+  // Optional alongside `smtp`: a receive-only install has no recipients
+  // recipe to apply. Send-path code must guard on `config.mail`.
+  mail: z
+    .object({
+      recipients: z.object({
+        to: z.array(z.string().email()).min(1),
+        cc: z.array(z.string().email()).default([]),
+        bcc: z.array(z.string().email()).default([]),
+      }),
+      subjectTemplate: z.string().optional(),
+      bodyTemplate: z.string().optional(),
+      replyTo: z.string().email().optional(),
+    })
+    .optional(),
 
   sync: z
     .object({

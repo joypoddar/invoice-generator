@@ -139,11 +139,15 @@ function runDoctor(): void {
   }
   console.log('Config: valid.');
 
-  if (getPassword(SMTP_PASSWORD_ACCOUNT)) {
-    console.log(`Keychain: smtp-app-password present (${config.smtp.user}).`);
+  if (config.smtp) {
+    if (getPassword(SMTP_PASSWORD_ACCOUNT)) {
+      console.log(`Keychain: smtp-app-password present (${config.smtp.user}).`);
+    } else {
+      console.error('FAIL: smtp-app-password missing from keychain.');
+      problems++;
+    }
   } else {
-    console.error('FAIL: smtp-app-password missing from keychain.');
-    problems++;
+    console.log('SMTP: not configured (receive-only install).');
   }
 
   if (getPassword(IMAP_PASSWORD_ACCOUNT)) {

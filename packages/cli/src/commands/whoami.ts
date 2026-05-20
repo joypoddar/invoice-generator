@@ -15,13 +15,23 @@ function runWhoami(): void {
     console.log('Not configured. Run `invoice init`.');
     process.exit(1);
   }
-  const smtpOk = getPassword(SMTP_PASSWORD_ACCOUNT) !== null;
   const imapOk = getPassword(IMAP_PASSWORD_ACCOUNT) !== null;
   console.log(`Name:       ${config.name}`);
   console.log(`Email:      ${config.email}`);
   console.log(`Currency:   ${config.currency}`);
   console.log(`Folder:     ${config.imap.folder}`);
   console.log(`IMAP user:  ${config.imap.user} ${imapOk ? '(password in keychain)' : '(MISSING password)'}`);
-  console.log(`SMTP user:  ${config.smtp.user} ${smtpOk ? '(password in keychain)' : '(MISSING password)'}`);
-  console.log(`Recipients: ${config.mail.recipients.to.join(', ')}`);
+  if (config.smtp) {
+    const smtpOk = getPassword(SMTP_PASSWORD_ACCOUNT) !== null;
+    console.log(
+      `SMTP user:  ${config.smtp.user} ${smtpOk ? '(password in keychain)' : '(MISSING password)'}`,
+    );
+  } else {
+    console.log(`SMTP:       not configured (receive-only install)`);
+  }
+  if (config.mail) {
+    console.log(`Recipients: ${config.mail.recipients.to.join(', ')}`);
+  } else {
+    console.log(`Recipients: not configured (receive-only install)`);
+  }
 }

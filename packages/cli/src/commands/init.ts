@@ -17,6 +17,13 @@ interface InitDraft {
   name?: string;
   email?: string;
   currency?: string;
+  /**
+   * Whether this install will send invoices (SMTP). When false the SMTP block,
+   * default-recipients prompt, number-format prompt, and the mail
+   * subject/body/reply-to optional section are all skipped. Receive-only
+   * installs (account head / inbox manager) answer false here.
+   */
+  wantsSending?: boolean;
   numberFormat?: string;
   company?: Config['company'];
   smtp?: { host: string; port: number; user: string };
@@ -24,7 +31,7 @@ interface InitDraft {
   recipientsTo?: string[];
   bank?: Config['bank'];
   tax?: TaxSection;
-  mailExtras?: Partial<Config['mail']>;
+  mailExtras?: Partial<NonNullable<Config['mail']>>;
   branding?: Config['branding'];
   lineItemHeader?: string;
   customers?: Config['customers'];
@@ -108,31 +115,50 @@ async function runInit(): Promise<void> {
     persist({ company: companySection });
   }
 
-  // 3. Invoice number format (uses company name for the suggested default)
-  const numberFormat = await setupNumberFormat(
-    draft.numberFormat ?? existing?.invoice.numberFormat ?? '',
-    companySection?.name,
-  );
-  persist({ numberFormat });
-
-  // 4. SMTP — loop until verify succeeds or user gives up
-  console.log('\n--- SMTP (sending) ---');
-  const smtp = await collectSmtp({
-    draft: draft.smtp,
-    existing: existing?.smtp,
-    defaultUser: email,
+  // 3. Sending capability gate. Receive-only installs (account head / inbox
+  // manager) skip SMTP, default recipients, and number format below. The
+  // choice is persisted to the draft so a mid-flow Ctrl+C resumes correctly.
+  const wantsSending = await confirm({
+    message:
+      'Set up sending (SMTP)? Skip this if you only need to read invoices (account head / inbox manager).',
+    default:
+      draft.wantsSending ??
+      (existing?.smtp !== undefined || (!draft && !existing)),
   });
-  persist({ smtp: { host: smtp.host, port: smtp.port, user: smtp.user } });
-  const smtpPass = smtp.password;
+  persist({ wantsSending });
 
-  // 5. IMAP — loop until connect succeeds or user gives up. Persist the
-  // connection AFTER the folder picker (folder is a required field on the
-  // draft).
+  // 4. Invoice number format (only relevant when this install will send).
+  let numberFormat: string | undefined = draft.numberFormat ?? existing?.invoice.numberFormat;
+  if (wantsSending) {
+    numberFormat = await setupNumberFormat(
+      draft.numberFormat ?? existing?.invoice.numberFormat ?? '',
+      companySection?.name,
+    );
+    persist({ numberFormat });
+  }
+
+  // 5. SMTP — loop until verify succeeds or user gives up. Skipped entirely
+  // for receive-only installs; no keychain entry is written.
+  let smtp: { host: string; port: number; user: string; password: string } | undefined;
+  let smtpPass: string | undefined;
+  if (wantsSending) {
+    console.log('\n--- SMTP (sending) ---');
+    smtp = await collectSmtp({
+      draft: draft.smtp,
+      existing: existing?.smtp,
+      defaultUser: email,
+    });
+    persist({ smtp: { host: smtp.host, port: smtp.port, user: smtp.user } });
+    smtpPass = smtp.password;
+  }
+
+  // 6. IMAP — loop until connect succeeds or user gives up. Always required:
+  // sync is what populates the local DB, even for receive-only installs.
   console.log('\n--- IMAP (sync) ---');
   const imapResult = await collectImap({
     draft: draft.imap,
     existing: existing?.imap,
-    defaultUser: smtp.user,
+    defaultUser: smtp?.user ?? email,
   });
   const imapPass = imapResult.password;
   const client = imapResult.client;
@@ -141,6 +167,10 @@ async function runInit(): Promise<void> {
     const folders = await listFolders(client);
     const ranked = [...folders].sort(
       (a, b) => specialRank(a.specialUse) - specialRank(b.specialUse),
+    );
+    console.log(
+      '  Tip: your own Sent folder = see invoices you sent. ' +
+        'INBOX of a shared mailbox (e.g., hello@creowis.com) = see invoices the team received.',
     );
     folder = await select({
       message: 'Which mailbox folder should this install sync from?',
@@ -160,20 +190,23 @@ async function runInit(): Promise<void> {
   console.log(`IMAP OK. Folder: ${folder}`);
   persist({ imap: { ...imapResult.connection, folder } });
 
-  // 6. Default recipients
-  console.log('\n--- Default recipients ---');
-  const toCsv = await input({
-    message: "Default 'to' (comma-separated email addresses):",
-    default:
-      draft.recipientsTo?.join(', ') ??
-      existing?.mail.recipients.to.join(', ') ??
-      'hello@creowis.com',
-  });
-  const toList = toCsv
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-  persist({ recipientsTo: toList });
+  // 7. Default recipients (only when this install will send).
+  let toList: string[] = draft.recipientsTo ?? existing?.mail?.recipients.to ?? [];
+  if (wantsSending) {
+    console.log('\n--- Default recipients ---');
+    const toCsv = await input({
+      message: "Default 'to' (comma-separated email addresses):",
+      default:
+        draft.recipientsTo?.join(', ') ??
+        existing?.mail?.recipients.to.join(', ') ??
+        'hello@creowis.com',
+    });
+    toList = toCsv
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    persist({ recipientsTo: toList });
+  }
 
   // 7. Optional sections — each gated on (y/N). Defaults to "yes" when no
   // value exists, "no" otherwise so re-running init doesn't make you re-walk
@@ -211,12 +244,13 @@ async function runInit(): Promise<void> {
     persist({ tax: taxSection });
   }
 
-  let mailExtras: Partial<Config['mail']> | undefined = draft.mailExtras;
+  let mailExtras: Partial<NonNullable<Config['mail']>> | undefined = draft.mailExtras;
   if (
-    await confirm({
+    wantsSending &&
+    (await confirm({
       message: 'Set up mail (subject template, body template, reply-to) now?',
-      default: !draft.mailExtras?.subjectTemplate && !existing?.mail.subjectTemplate,
-    })
+      default: !draft.mailExtras?.subjectTemplate && !existing?.mail?.subjectTemplate,
+    }))
   ) {
     const result = await setupMail({
       ...(existing?.mail ?? { recipients: { to: toList, cc: [], bcc: [] } }),
@@ -273,34 +307,43 @@ async function runInit(): Promise<void> {
     }
   }
 
-  // Merge everything into a fresh config object and validate
+  // Merge everything into a fresh config object and validate. Receive-only
+  // installs persist neither `smtp` nor `mail`; the schema allows both to be
+  // absent and send-path commands check for them at runtime.
   const merged: Record<string, unknown> = {
     ...(existing as unknown as Record<string, unknown> | undefined),
     name,
     email,
     currency,
-    smtp: { host: smtp.host, port: smtp.port, user: smtp.user },
     imap: { ...imapResult.connection, folder },
-    mail: {
-      ...(existing?.mail ?? {}),
-      ...(mailExtras ?? {}),
-      recipients: { ...(existing?.mail.recipients ?? {}), to: toList },
-    },
     company: companySection ?? existing?.company ?? {},
     bank: bankSection ?? existing?.bank ?? {},
     branding: brandingSection ?? existing?.branding ?? {},
     customers: customersSection ?? existing?.customers ?? {},
     invoice: {
       ...(existing?.invoice ?? {}),
-      numberFormat,
+      ...(numberFormat !== undefined ? { numberFormat } : {}),
       ...(taxSection ?? {}),
       ...(lineItemHeader !== undefined ? { lineItemHeader } : {}),
     },
   };
+  if (wantsSending && smtp) {
+    merged.smtp = { host: smtp.host, port: smtp.port, user: smtp.user };
+    merged.mail = {
+      ...(existing?.mail ?? {}),
+      ...(mailExtras ?? {}),
+      recipients: { ...(existing?.mail?.recipients ?? {}), to: toList },
+    };
+  } else {
+    // Strip any leftover send-side fields if this is a re-init that flipped
+    // an existing sending install to receive-only.
+    delete merged.smtp;
+    delete merged.mail;
+  }
   const config = ConfigSchema.parse(merged);
 
   saveConfig(config);
-  setPassword(SMTP_PASSWORD_ACCOUNT, smtpPass);
+  if (wantsSending && smtpPass) setPassword(SMTP_PASSWORD_ACCOUNT, smtpPass);
   setPassword(IMAP_PASSWORD_ACCOUNT, imapPass);
 
   ensureInvoiceDir();
@@ -309,7 +352,13 @@ async function runInit(): Promise<void> {
 
   clearDraft('init');
 
-  console.log('\nSetup complete. Try `invoice whoami`.');
+  if (wantsSending) {
+    console.log('\nSetup complete. Try `invoice whoami`.');
+  } else {
+    console.log(
+      '\nSetup complete (receive-only). Run `invoice setup smtp` later if you want to start sending.',
+    );
+  }
 }
 
 function specialRank(use?: string): number {
@@ -323,7 +372,7 @@ function specialRank(use?: string): number {
  * verify failure with a "retry?" prompt so a single typo doesn't tear down
  * the whole init session.
  */
-async function collectSmtp(args: {
+export async function collectSmtp(args: {
   draft?: { host: string; port: number; user: string };
   existing?: { host: string; port: number; user: string };
   defaultUser: string;
@@ -531,7 +580,9 @@ export async function setupTax(existing: TaxSection = {}): Promise<TaxSection> {
   return omitEmpty({ defaultTaxRate, taxLabel, paymentInstructions });
 }
 
-export async function setupMail(existing: Config['mail']): Promise<Config['mail']> {
+export async function setupMail(
+  existing: NonNullable<Config['mail']>,
+): Promise<NonNullable<Config['mail']>> {
   console.log('\n--- Mail (subject line, body template, reply-to) ---');
   console.log(
     '  Placeholders: {invoiceNumber} {customerName} {customerEmail} {total} {currency}',
@@ -657,6 +708,18 @@ export async function setupCustomer(prefill?: Partial<CustomerData>): Promise<Cu
   if (phone) customer.phone = phone;
   if (numberFormat) customer.numberFormat = numberFormat;
   return customer;
+}
+
+export async function setupRecipients(existing?: string[]): Promise<string[]> {
+  console.log('\n--- Default recipients ---');
+  const toCsv = await input({
+    message: "Default 'to' (comma-separated email addresses):",
+    default: existing?.join(', ') ?? 'hello@creowis.com',
+  });
+  return toCsv
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 export async function setupLineItemHeader(existing: string = 'Description'): Promise<string> {

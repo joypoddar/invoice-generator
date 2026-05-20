@@ -2,14 +2,17 @@ import type { Command } from 'commander';
 import { ConfigSchema, type Config } from '@invoice/shared';
 import { loadConfigSafe, saveConfig } from '../store.js';
 import {
+  collectSmtp,
   setupBank,
   setupBranding,
   setupCompany,
   setupLineItemHeader,
   setupMail,
   setupNumberFormat,
+  setupRecipients,
   setupTax,
 } from './init.js';
+import { setPassword, SMTP_PASSWORD_ACCOUNT } from '../secrets.js';
 
 export function register(program: Command): void {
   const cmd = program
@@ -27,6 +30,14 @@ export function register(program: Command): void {
     .command('tax')
     .description('Set tax rate, tax label, and payment instructions')
     .action(runTax);
+  cmd
+    .command('smtp')
+    .description('Set SMTP host/port/user + app password (enables sending)')
+    .action(runSmtp);
+  cmd
+    .command('recipients')
+    .description("Set default 'to' recipients for outgoing invoices")
+    .action(runRecipients);
   cmd
     .command('mail')
     .description('Set email subject template, body template, and reply-to')
@@ -90,12 +101,47 @@ async function runTax(): Promise<void> {
   persist(config, { invoice: { ...config.invoice, ...tax } });
 }
 
+async function runSmtp(): Promise<void> {
+  const config = requireConfig();
+  console.log('\n--- SMTP (sending) ---');
+  const smtp = await collectSmtp({
+    existing: config.smtp,
+    defaultUser: config.email,
+  });
+  setPassword(SMTP_PASSWORD_ACCOUNT, smtp.password);
+  persist(config, {
+    smtp: { host: smtp.host, port: smtp.port, user: smtp.user },
+    // Seed an empty mail block so a follow-up `invoice send` only fails on
+    // recipients (clearer error) rather than on missing mail entirely.
+    mail: config.mail ?? { recipients: { to: [], cc: [], bcc: [] } },
+  });
+}
+
+async function runRecipients(): Promise<void> {
+  const config = requireConfig();
+  const to = await setupRecipients(config.mail?.recipients.to);
+  if (to.length === 0) {
+    console.error("Need at least one 'to' recipient.");
+    process.exit(1);
+  }
+  const mail = config.mail
+    ? { ...config.mail, recipients: { ...config.mail.recipients, to } }
+    : { recipients: { to, cc: [], bcc: [] } };
+  persist(config, { mail });
+}
+
 async function runMail(): Promise<void> {
   const config = requireConfig();
+  if (!config.mail) {
+    console.error(
+      "Mail isn't configured. Run `invoice setup smtp` then `invoice setup recipients` first.",
+    );
+    process.exit(1);
+  }
   const result = await setupMail(config.mail);
-  // Recipients are managed by `invoice init` (or hand-edit). `setup mail` never
-  // touches them — preserve from existing config regardless of what setupMail
-  // returned.
+  // Recipients are managed by `invoice init` / `invoice setup recipients`.
+  // `setup mail` never touches them — preserve from existing config regardless
+  // of what setupMail returned.
   const mail = { ...result, recipients: config.mail.recipients };
   persist(config, { mail });
 }
@@ -120,9 +166,11 @@ async function runNumberFormat(): Promise<void> {
 
 async function runAll(): Promise<void> {
   // Verify config exists once up-front so we don't half-walk the wizard.
-  requireConfig();
+  const config = requireConfig();
   await runCompany();
   await runNumberFormat();
+  if (!config.smtp) await runSmtp();
+  if (!config.mail || config.mail.recipients.to.length === 0) await runRecipients();
   await runBank();
   await runTax();
   await runMail();

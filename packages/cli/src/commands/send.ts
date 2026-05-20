@@ -99,9 +99,22 @@ export async function performSend(
     return 'error';
   }
 
+  if (!config.smtp) {
+    console.error(
+      "Sending isn't configured for this install. Run `invoice setup smtp` to enable sending.",
+    );
+    return 'error';
+  }
+  if (!config.mail || config.mail.recipients.to.length === 0) {
+    console.error(
+      'No recipients configured. Run `invoice setup recipients` (or pass --to) to set them.',
+    );
+    return 'error';
+  }
+
   const password = getPassword(SMTP_PASSWORD_ACCOUNT);
   if (!password) {
-    console.error('SMTP password not in keychain. Run `invoice init` to set it.');
+    console.error('SMTP password not in keychain. Run `invoice setup smtp` to set it.');
     return 'error';
   }
 
@@ -141,7 +154,7 @@ export async function performSend(
     },
     dateFormat: config.invoice.dateFormat,
     currencyFormat: config.invoice.currencyFormat,
-    subjectTemplate: opts.subject ?? config.mail.subjectTemplate,
+    subjectTemplate: opts.subject ?? config.mail?.subjectTemplate,
   };
   await sendInvoice(
     sentInvoice,

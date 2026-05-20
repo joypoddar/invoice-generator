@@ -29,9 +29,16 @@ export function composeRecipients(
   const customerTo = customer?.defaultRecipientTo ?? [];
   const customerCc = customer?.defaultRecipientCc ?? [];
 
-  const defaultTo = customerTo.length > 0 ? customerTo : config.mail.recipients.to;
-  const defaultCc = customerCc.length > 0 ? customerCc : config.mail.recipients.cc;
-  const defaultBcc = config.mail.recipients.bcc;
+  // `config.mail` is optional (a receive-only install never sets it). When
+  // absent, only overrides + customer defaults can populate recipients;
+  // `performSend` is responsible for refusing to send when `to` ends up empty.
+  const globalTo = config.mail?.recipients.to ?? [];
+  const globalCc = config.mail?.recipients.cc ?? [];
+  const globalBcc = config.mail?.recipients.bcc ?? [];
+
+  const defaultTo = customerTo.length > 0 ? customerTo : globalTo;
+  const defaultCc = customerCc.length > 0 ? customerCc : globalCc;
+  const defaultBcc = globalBcc;
 
   return {
     to: overrides.to ?? defaultTo,
