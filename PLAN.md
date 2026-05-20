@@ -1107,6 +1107,232 @@ Manual smoke (Phase 4.6 walkthrough in `TESTING.md`):
 - Shell tab-completion for ids/numbers — out-of-band.
 - Bulk operations (`invoice send --all-drafts-for <customer>`).
 
+## Phase 4.7 — UX flows (init welcome + drafts, customer directory, subject placeholders, command chaining, productivity adds)
+
+### Context
+
+Five UX improvements from manual use:
+
+1. `invoice init` drops the user in with no overview of what the CLI does or how to get started. Crashes mid-init (SMTP verify fail, Ctrl+C) lose all typed input.
+2. The "default recipient email" lives once globally in `config.mail.recipients.to`, but every customer has its own AR / billing email. Users want a **per-customer default** — pick a saved customer in `invoice new` and recipients pre-fill from that customer.
+3. Subject templates only know about the invoice's fields. Users want richer placeholders like `Invoice - {userName} - {monthShort}'{yearShort}`.
+4. To clone-then-send, users currently run two commands. They'd prefer `invoice clone <id> --send --yes`.
+5. Quick-access shortcuts: `invoice last` to print the most recent invoice, `invoice send --last` for "just-made-it-send-it", `invoice new --customer <name>` to skip the picker, `invoice resend <id>` for bounced sends.
+
+### Goals
+
+- New users see a brief feature overview at the top of `invoice init`.
+- Partial init state survives crashes via `~/.invoice/init.draft.json`; re-running resumes from the last saved point.
+- A **customer directory** (`config.customers`) lets the user store per-customer recipients + addresses; `invoice new` picks from it.
+- Subject placeholders include sender identity and date pieces.
+- `--send` flag chains clone/template-use/recurring-generate straight into a send.
+- Productivity shortcuts: `invoice last`, `invoice send --last`, `invoice new --customer <name>`, `invoice resend <id>`.
+
+### Decisions confirmed
+
+- **Customer storage**: inline in `config.json` as `config.customers: Record<slug, CustomerData>`. Single file, atomic writes, no I/O complexity. Customer data is small (~200 bytes per entry); even 50 customers add ~10 KB to config.
+- **Command chaining**: `--send` flag on the generator commands. No custom argv parsing.
+- **All four productivity adds in scope** (`invoice last`, `invoice send --last`, `invoice new --customer`, `invoice resend`).
+
+### Step 1 — `invoice init` welcome banner + draft persistence (init AND new)
+
+**Files**:
+
+- `packages/cli/src/commands/init.ts` — add `printWelcome()` helper printing a brief overview at the start.
+- `packages/cli/src/drafts.ts` (new) — generic draft I/O parametrized by name. Functions:
+  - `loadDraft<T>(name): T | null`
+  - `saveDraft(name, partial)` (writes to `~/.invoice/<name>.draft.json`, mode 0600)
+  - `clearDraft(name)`
+    Used by both init (`name='init'`) and new (`name='new'`).
+- Wrap each section in `runInit` with a `saveDraft('init', accumulator)` call after each prompt section so partial state survives a crash.
+- On `runInit` entry: if `init.draft.json` exists, prompt `"Resume previous init session? (Y/n)"` — `Y` loads draft and uses values as prompt defaults; `N` deletes draft and starts fresh.
+- On `saveConfig` success at the end: `clearDraft('init')`.
+- **SMTP/IMAP verify failure**: catch the error, prompt `"Retry with different credentials? (Y/n)"`, re-loop the password (and host/port/user if needed). Don't throw immediately.
+- **`invoice new` draft persistence (same pattern)**: `commands/new.ts` saves to `new.draft.json` after each prompt (customer name, email, address, currency, after each line item, etc.). On entry: if a draft exists, prompt `"Resume previous new-invoice session? (Y/n)"`. Draft is cleared on successful `store.upsert`. Catches Ctrl+C in the middle of a long line-item loop.
+
+**Welcome banner content** (short):
+
+```
+Invoice generator — Creowis CLI
+───────────────────────────────────────────
+This tool lets you:
+  • Create invoices         (invoice new)
+  • Send them via SMTP      (invoice send <id>)
+  • Pull received invoices  (invoice sync)
+  • Mark paid / overdue     (invoice mark <id> paid)
+  • Clone last month's      (invoice clone <id>)
+
+Setup is one-time. Each section can be re-run later via
+  invoice setup <section>
+
+Press Ctrl+C at any time — your progress is saved.
+───────────────────────────────────────────
+```
+
+**Checkpoint**: kill init halfway through SMTP, re-run, see "Resume previous init session?", confirm name/email/currency/numberFormat/company pre-fill from before.
+
+### Step 2 — Customer directory (schema + storage)
+
+**Files**:
+
+- `packages/shared/src/config-schema.ts` — add:
+  ```ts
+  customers: z.record(z.string(), z.object({
+    name: z.string().min(1),
+    email: z.string().email().optional(),
+    address: z.string().optional(),
+    phone: z.string().optional(),
+    defaultRecipientTo: z.array(z.string().email()).default([]),
+    defaultRecipientCc: z.array(z.string().email()).default([]),
+  })).default({}),
+  ```
+- `packages/cli/src/customers.ts` (new) — slug helper + CRUD over `config.customers`:
+  - `slugFor(name): string` — lowercase, hyphenated, alphanumeric-only (same pattern as templates).
+  - `listCustomers(config): Array<[slug, CustomerData]>` — sorted by name.
+  - `getCustomer(config, ref): CustomerData | null` — accepts slug or name.
+  - `setCustomer(config, slug, data): Config` — returns updated config (caller saves).
+  - `deleteCustomer(config, slug): Config` — returns updated config.
+
+### Step 3 — `invoice customer save/list/show/delete` subcommands + init/setup integration
+
+**Files**:
+
+- `packages/cli/src/commands/customer.ts` (new):
+  - `invoice customer save` — interactive: name → email → address (multi-line) → phone → defaultRecipientTo (CSV) → defaultRecipientCc (CSV). Slug computed from name. Refuses to overwrite an existing customer (use `--force` or `customer delete` first).
+  - `invoice customer list` — table: Slug, Name, Email, Default recipients.
+  - `invoice customer show <name-or-slug>` — pretty-print JSON.
+  - `invoice customer delete <name-or-slug>` — interactive confirm; `--yes` to skip.
+- `packages/cli/src/index.ts` — register.
+
+**Three entry points for adding customers** (all reuse the same `setupCustomer` helper):
+
+1. **Direct command**: `invoice customer save` (above).
+2. **Init's optional sections**: add `Add customers now? (y/N)` to the optional-setup block in `runInit`. If yes, loops `setupCustomer()` calls until the user says "Done? (y/N)". Suitable for users who know their customer list upfront.
+3. **Save-on-send prompt** (Step 6): after a successful `invoice send` to a not-yet-saved customer, ask `Save <Name> as a customer for next time? (Y/n)` — high-signal moment ("I actually billed them"). Walks `setupCustomer(name, defaultRecipientTo: recipients.to, defaultRecipientCc: recipients.cc)` with already-collected values pre-filled.
+
+**Setup helper signature** (in `init.ts`, exported):
+
+```ts
+export async function setupCustomer(prefill?: Partial<CustomerData>): Promise<CustomerData>;
+```
+
+**Checkpoint**: `invoice customer save` → `invoice customer list` shows it; `invoice config get customers.<slug>` confirms it lives in config.json. Add a customer during init → appears in `customer list`. Send to a new customer → save prompt → confirm → `customer list` shows them.
+
+### Step 4 — Customer picker in `invoice new`
+
+**Files**:
+
+- `packages/cli/src/commands/new.ts`:
+  - Before the `customerName` prompt, check `config.customers`.
+  - If empty: prompt as today, plus a final question `"Save this customer for future use? (Y/n)"`. If Y, also prompt `defaultRecipientTo` (CSV, defaults to global `config.mail.recipients.to`) + `defaultRecipientCc`, then save into `config.customers`.
+  - If non-empty: show a `select` picker — list of saved customers + a `+ New customer` option at the bottom. Picking a saved one pre-fills customerName, customerEmail, customerAddress, and stashes the customer's `defaultRecipientTo`/`defaultRecipientCc` for the `recipients` snapshot. Picking `+ New customer` runs the as-today flow with the optional save-for-future step.
+- The `customerData` selected (or just-created) is stashed on `invoice.default.customerSlug` (a new optional default field) so the send step can look it up for recipients.
+- `packages/shared/src/invoice.ts` — add `customerSlug` to `DEFAULT_FIELDS`.
+
+**Send-side change** (`commands/send.ts`):
+
+- Before composing recipients, look up the customer's defaults via `getCustomer(config, invoice.default.customerSlug)`:
+  - Effective `to` = `--to` flag → customer.defaultRecipientTo → `config.mail.recipients.to`.
+  - Effective `cc` = `--cc` flag → customer.defaultRecipientCc → `config.mail.recipients.cc`.
+  - Same precedence for `bcc` (customer doesn't have a Bcc field; falls straight from `--bcc` or `config.mail.recipients.bcc`).
+
+**Checkpoint**: pick a saved customer in `invoice new`; `invoice send <id>` shows the customer's default recipients in the confirm screen.
+
+### Step 5 — Expanded subject placeholders
+
+**Files**:
+
+- `packages/shared/src/email-format.ts` — extend `renderSubject(template, invoice)`:
+  - Add placeholders derived from invoice fields:
+    - `{userName}` ← `invoice.default.fromName`
+    - `{userEmail}` ← `invoice.default.fromEmail`
+    - `{companyName}` ← `invoice.default.companyName` (sender)
+    - `{customerEmail}` ← `invoice.default.customerEmail`
+  - Date pieces derived from `invoice.default.issueDate` using `Intl.DateTimeFormat` (locale-stable):
+    - `{month}` — full month name ("April")
+    - `{monthShort}` — short month name ("Apr")
+    - `{monthNum}` — 2-digit ("04")
+    - `{year}` — 4-digit ("2026")
+    - `{yearShort}` — 2-digit ("26")
+    - `{day}` — day-of-month ("28")
+    - `{dayPadded}` — 2-digit day ("28")
+- Tests in `email-format.test.ts`: each new placeholder + a mixed template like `Invoice - {userName} - {monthShort}'{yearShort}` rendering correctly.
+
+### Step 6 — `--send` flag on clone / template use / recurring generate
+
+**Files**:
+
+- `packages/cli/src/commands/send.ts` — extract `sendInvoiceById(id, sendOpts)` (or similar) so other commands can reuse the full send pipeline (resolve → confirm → SMTP → upsert).
+- `packages/cli/src/commands/clone.ts` — add `--send` (boolean) and `--yes` to the option surface. After the upsert succeeds, if `--send`, call into the extracted send function with the new id. `--yes` flows through.
+- `packages/cli/src/commands/template.ts` — same for `template use`.
+- `packages/cli/src/commands/recurring.ts` — `recurring generate` gets `--send` too. When set, after each draft is created, immediately send it (respecting `--yes`). One ambiguous case: if `recurring generate` produces N drafts and `--send` is set, do we confirm per send or send all in one go? **Decision**: per-send confirmation by default (one prompt per draft); `--yes` skips them all.
+
+### Step 7 — Productivity shortcuts
+
+**Files**:
+
+- `packages/cli/src/commands/last.ts` (new) — `invoice last`:
+  - Loads the most-recently-created invoice (sorted by `createdAt` or, fallback, by `issueDate DESC`). Prints short id, full UUID, invoice number, customer, status, total. Single block, easy to grep.
+  - **`--drafts` flag** restricts to `status='draft'` only. Useful for the "send what I just made" mental model.
+- `packages/cli/src/commands/send.ts` — add `--last` flag. When set, ignore the positional `<id>` arg (or make it optional) and resolve to the most recent **draft** (filter `status='draft'`, sort by createdAt DESC). Errors if no drafts exist.
+- `packages/cli/src/commands/new.ts` — add `--customer <name-or-slug>` flag. When set, look up via `getCustomer`; bail if not found; skip the picker entirely.
+- `packages/cli/src/commands/resend.ts` (new) — `invoice resend <id>`:
+  - Resolves the invoice via the resolver.
+  - Warns: `"Invoice was already sent at <sentAt> to <recipients>. Resend? (y/N)"` (with `--yes` to skip).
+  - Sends again (re-using the same orchestrator from Step 6).
+  - Updates `sentAt` to the new timestamp; `recipients` reflects the actual `--to/--cc/--bcc` overrides (or customer defaults).
+- `packages/cli/src/commands/search.ts` (new) — `invoice search <text>` thin wrapper around `invoice list --text <text>`.
+- `packages/cli/src/index.ts` — register `last`, `resend`, `search`. Also register `ls` as an alias for `list` via commander's `.alias('ls')`.
+
+### Step 8 — Verification + housekeeping
+
+**Run**:
+
+- `pnpm build && pnpm test && pnpm lint` clean. Expect ~210+ tests (additions: customer storage CRUD, subject placeholders, send orchestrator unit if extracted, resend logic).
+- Walk a new "Phase 4.7 verification" section in `TESTING.md`:
+  - Init welcome banner appears.
+  - Ctrl+C during init mid-section, re-run, draft prompt appears, values pre-filled.
+  - SMTP retry loop works.
+  - `invoice customer save / list / show / delete` round-trips through config.json.
+  - `invoice new` picker shows saved customers; "+ New customer" path optionally saves.
+  - Send composes recipients with customer-first precedence.
+  - Subject template `Invoice - {userName} - {monthShort}'{yearShort}` renders correctly.
+  - `invoice clone <id> --send --yes` chains.
+  - `invoice last`, `invoice send --last`, `invoice new --customer Acme`, `invoice resend <id>` all behave as designed.
+
+**Update**:
+
+- `CLAUDE.md` — bump phase status to include 4.7; record deviations (customer directory in config.json, send orchestrator extraction, recurring generate's per-draft confirm behavior, etc.).
+
+### Critical files to create
+
+- `packages/cli/src/drafts.ts` (generic init + new draft persistence)
+- `packages/cli/src/customers.ts`
+- `packages/cli/src/commands/customer.ts`
+- `packages/cli/src/commands/last.ts`
+- `packages/cli/src/commands/resend.ts`
+- `packages/cli/src/commands/search.ts`
+
+### Critical files to modify
+
+- `packages/shared/src/config-schema.ts` (add `customers` map)
+- `packages/shared/src/invoice.ts` (`customerSlug` in DEFAULT_FIELDS)
+- `packages/shared/src/email-format.ts` (`renderSubject` placeholders)
+- `packages/cli/src/commands/init.ts` (welcome + draft persistence + SMTP/IMAP retry loop)
+- `packages/cli/src/commands/new.ts` (picker + `--customer` flag + save-customer follow-up)
+- `packages/cli/src/commands/send.ts` (customer-aware recipient composition + extract orchestrator + `--last` flag)
+- `packages/cli/src/commands/clone.ts` (`--send`/`--yes`)
+- `packages/cli/src/commands/template.ts` (`--send`/`--yes` on `use`)
+- `packages/cli/src/commands/recurring.ts` (`--send`/`--yes` on `generate`)
+- `packages/cli/src/index.ts` (register new commands)
+
+### Out of scope (defer to later phases)
+
+- Multi-sender-company support (a user works for multiple sender entities). Probably never; if needed, becomes a flat additive change since `config.company` becomes `config.companies` keyed by something.
+- Customer-side analytics (top customers by invoice volume, etc.) — Phase 6 (`/analytics`).
+- Importing customers from CSV — niche; defer.
+- Tab completion for customer names — Phase 3 polish.
+
 ## Out of scope (explicit non-goals)
 
 - Any hosted/cloud component beyond the mail provider itself.
