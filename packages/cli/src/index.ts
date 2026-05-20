@@ -2,6 +2,7 @@
 import { Command } from 'commander';
 import * as init from './commands/init.js';
 import * as setup from './commands/setup.js';
+import * as customerCmd from './commands/customer.js';
 import * as whoami from './commands/whoami.js';
 import * as configCmd from './commands/config.js';
 import * as newCmd from './commands/new.js';
@@ -19,6 +20,7 @@ program.name('invoice').description('Invoice generator').version('0.0.0');
 
 init.register(program);
 setup.register(program);
+customerCmd.register(program);
 configCmd.register(program);
 whoami.register(program);
 newCmd.register(program);

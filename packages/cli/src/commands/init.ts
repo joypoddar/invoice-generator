@@ -11,6 +11,7 @@ import {
   setPassword,
 } from '../secrets.js';
 import { clearDraft, draftExists, loadDraft, saveDraft } from '../drafts.js';
+import { slugFor, type CustomerData } from '../customers.js';
 
 interface InitDraft {
   name?: string;
@@ -26,6 +27,7 @@ interface InitDraft {
   mailExtras?: Partial<Config['mail']>;
   branding?: Config['branding'];
   lineItemHeader?: string;
+  customers?: Config['customers'];
 }
 
 function printWelcome(): void {
@@ -250,6 +252,27 @@ async function runInit(): Promise<void> {
     persist({ lineItemHeader });
   }
 
+  // Customer directory — optional, lets `invoice new` show a picker later.
+  let customersSection: Config['customers'] | undefined =
+    draft.customers ?? existing?.customers;
+  const hasExisting = Object.keys(customersSection ?? {}).length > 0;
+  if (
+    await confirm({
+      message: 'Add customers now? (you can also add them later via `invoice customer save`)',
+      default: !hasExisting,
+    })
+  ) {
+    customersSection = { ...(customersSection ?? {}) };
+    let adding = true;
+    while (adding) {
+      const customer = await setupCustomer();
+      customersSection[slugFor(customer.name)] = customer;
+      persist({ customers: customersSection });
+      console.log(`  Saved "${customer.name}".`);
+      adding = await confirm({ message: 'Add another customer?', default: false });
+    }
+  }
+
   // Merge everything into a fresh config object and validate
   const merged: Record<string, unknown> = {
     ...(existing as unknown as Record<string, unknown> | undefined),
@@ -266,6 +289,7 @@ async function runInit(): Promise<void> {
     company: companySection ?? existing?.company ?? {},
     bank: bankSection ?? existing?.bank ?? {},
     branding: brandingSection ?? existing?.branding ?? {},
+    customers: customersSection ?? existing?.customers ?? {},
     invoice: {
       ...(existing?.invoice ?? {}),
       numberFormat,
@@ -553,6 +577,46 @@ export async function setupBranding(
     signatureUrl,
     signatoryLabel,
   }) as Config['branding'];
+}
+
+export async function setupCustomer(prefill?: Partial<CustomerData>): Promise<CustomerData> {
+  console.log('\n--- Customer ---');
+  const name = await input({
+    message: 'Customer name:',
+    default: prefill?.name ?? '',
+    required: true,
+  });
+  const email = await input({ message: 'Email (optional):', default: prefill?.email ?? '' });
+  const address = await readMultiline('Address (optional)', prefill?.address);
+  const phone = await input({ message: 'Phone (optional):', default: prefill?.phone ?? '' });
+
+  const toCsv = await input({
+    message: "Default 'to' recipients (comma-separated emails):",
+    default: prefill?.defaultRecipientTo?.join(', ') ?? '',
+  });
+  const defaultRecipientTo = toCsv
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const ccCsv = await input({
+    message: "Default 'cc' recipients (comma-separated emails, optional):",
+    default: prefill?.defaultRecipientCc?.join(', ') ?? '',
+  });
+  const defaultRecipientCc = ccCsv
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const customer: CustomerData = {
+    name,
+    defaultRecipientTo,
+    defaultRecipientCc,
+  };
+  if (email) customer.email = email;
+  if (address) customer.address = address;
+  if (phone) customer.phone = phone;
+  return customer;
 }
 
 export async function setupLineItemHeader(existing: string = 'Description'): Promise<string> {
