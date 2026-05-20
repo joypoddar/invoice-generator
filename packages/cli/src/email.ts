@@ -139,7 +139,7 @@ export function renderInvoiceHtml(invoice: Invoice, opts: RenderOpts = {}): stri
   // taxRate, else 0. Totals are summed from the lines so they always reconcile
   // with what the line column shows.
   const computed = items.map((it) => {
-    const rate = typeof it.taxRate === 'number' ? it.taxRate : invoiceTaxRate ?? 0;
+    const rate = typeof it.taxRate === 'number' ? it.taxRate : (invoiceTaxRate ?? 0);
     const amount = it.quantity * it.unitPrice;
     const igst = amount * rate;
     return { item: it, rate, amount, igst, total: amount + igst };
@@ -450,9 +450,9 @@ function resolveSignatureSrc(urlOrPath: string): string | null {
 
 function renderBankRow(label: string, value: string): string {
   if (!value) return '';
-  const labelParts = label.includes(' ') ? label.split(' ').join('<br/>') : label;
+  // const labelParts = label.includes(' ') ? label.split(' ').join('<br/>') : label;
   return `<tr>
-    <td style="font-weight:600; padding-right:16px; white-space:nowrap;">${labelParts}</td>
+    <td style="font-weight:600; padding-right:16px; white-space:nowrap;">${label}</td>
     <td>${escapeHtml(value)}</td>
   </tr>`;
 }

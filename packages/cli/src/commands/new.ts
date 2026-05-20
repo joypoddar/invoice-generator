@@ -5,6 +5,21 @@ import { renderInvoiceNumber, type Invoice, type LineItem } from '@invoice/share
 import { SqliteStore } from '@invoice/core';
 import { dbPath, loadConfigSafe, saveConfig } from '../store.js';
 import { readMultiline } from './init.js';
+import { clearDraft, draftExists, loadDraft, saveDraft } from '../drafts.js';
+
+interface NewDraft {
+  invoiceId?: string;
+  invoiceNumber?: string;
+  issueDate?: string;
+  dueDate?: string;
+  customerName?: string;
+  customerEmail?: string;
+  customerAddress?: string;
+  currency?: string;
+  lineItems?: LineItem[];
+  notes?: string;
+  custom?: Record<string, unknown>;
+}
 
 export function register(program: Command): void {
   program
@@ -20,27 +35,68 @@ async function runNew(): Promise<void> {
     process.exit(1);
   }
 
+  // Draft persistence: resume from a prior interrupted session if present.
+  let draft: NewDraft = {};
+  if (draftExists('new')) {
+    const resume = await confirm({
+      message: 'Resume previous new-invoice session?',
+      default: true,
+    });
+    if (resume) {
+      draft = loadDraft<NewDraft>('new') ?? {};
+    } else {
+      clearDraft('new');
+    }
+  }
+  const persist = (patch: Partial<NewDraft>): void => {
+    draft = { ...draft, ...patch };
+    saveDraft('new', draft);
+  };
+
   const today = new Date();
-  const issueDate = toIsoDate(today);
-  const dueDate = toIsoDate(addDays(today, config.invoice.defaultDueDays));
-  const invoiceNumber = renderInvoiceNumber(
-    config.invoice.numberFormat,
-    config.invoice.nextSeq,
-    today,
-    config.company.name,
-  );
-  const invoiceId = randomUUID();
+  // Reuse identity from draft if resuming so the new invoice keeps a single
+  // id / number / issue date across the resumed session.
+  const issueDate = draft.issueDate ?? toIsoDate(today);
+  const dueDate =
+    draft.dueDate ?? toIsoDate(addDays(today, config.invoice.defaultDueDays));
+  const invoiceNumber =
+    draft.invoiceNumber ??
+    renderInvoiceNumber(
+      config.invoice.numberFormat,
+      config.invoice.nextSeq,
+      today,
+      config.company.name,
+    );
+  const invoiceId = draft.invoiceId ?? randomUUID();
+  persist({ invoiceId, invoiceNumber, issueDate, dueDate });
 
   console.log(`\nNew invoice: ${invoiceNumber}`);
   console.log(`  id: ${invoiceId}\n`);
 
-  const customerName = await input({ message: 'Customer name:', required: true });
-  const customerEmail = await input({ message: 'Customer email:', default: '' });
-  const customerAddress = await readMultiline('Customer address (optional)');
-  const currency = await input({ message: 'Currency:', default: config.currency });
+  const customerName = await input({
+    message: 'Customer name:',
+    default: draft.customerName,
+    required: true,
+  });
+  persist({ customerName });
+  const customerEmail = await input({
+    message: 'Customer email:',
+    default: draft.customerEmail ?? '',
+  });
+  persist({ customerEmail });
+  const customerAddress = await readMultiline('Customer address (optional)', draft.customerAddress);
+  persist({ customerAddress });
+  const currency = await input({
+    message: 'Currency:',
+    default: draft.currency ?? config.currency,
+  });
+  persist({ currency });
 
   console.log('\nLine items:');
-  const lineItems: LineItem[] = [];
+  const lineItems: LineItem[] = draft.lineItems ? [...draft.lineItems] : [];
+  if (lineItems.length > 0) {
+    console.log(`  (${lineItems.length} item(s) from previous session — continuing where you left off)`);
+  }
   let addItem = true;
   while (addItem) {
     const description = await input({ message: '  Description:', required: true });
@@ -50,6 +106,7 @@ async function runNew(): Promise<void> {
       console.error('  Quantity and unit price must be numbers; skipping this line item.');
     } else {
       lineItems.push({ description, quantity, unitPrice });
+      persist({ lineItems });
     }
     addItem = await confirm({ message: '  Add another line item?', default: false });
   }
@@ -61,15 +118,17 @@ async function runNew(): Promise<void> {
 
   const notes = await input({
     message: 'Notes (optional):',
-    default: config.invoice.defaultNotes ?? '',
+    default: draft.notes ?? config.invoice.defaultNotes ?? '',
   });
+  persist({ notes });
 
-  const custom: Record<string, unknown> = {};
+  const custom: Record<string, unknown> = { ...(draft.custom ?? {}) };
   let addCustom = await confirm({ message: 'Add additional fields?', default: false });
   while (addCustom) {
     const key = await input({ message: '  Field name:', required: true });
     const valueRaw = await input({ message: `  Value for ${key}:`, required: true });
     custom[key] = coerce(valueRaw);
+    persist({ custom });
     addCustom = await confirm({ message: '  Add another?', default: false });
   }
 
@@ -111,6 +170,8 @@ async function runNew(): Promise<void> {
     ...config,
     invoice: { ...config.invoice, nextSeq: config.invoice.nextSeq + 1 },
   });
+
+  clearDraft('new');
 
   const total = subtotal + (taxAmount ?? 0);
   console.log(`\nCreated draft ${invoiceNumber}`);

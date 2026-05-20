@@ -10,6 +10,42 @@ import {
   getPassword,
   setPassword,
 } from '../secrets.js';
+import { clearDraft, draftExists, loadDraft, saveDraft } from '../drafts.js';
+
+interface InitDraft {
+  name?: string;
+  email?: string;
+  currency?: string;
+  numberFormat?: string;
+  company?: Config['company'];
+  smtp?: { host: string; port: number; user: string };
+  imap?: { host: string; port: number; user: string; folder: string };
+  recipientsTo?: string[];
+  bank?: Config['bank'];
+  tax?: TaxSection;
+  mailExtras?: Partial<Config['mail']>;
+  branding?: Config['branding'];
+  lineItemHeader?: string;
+}
+
+function printWelcome(): void {
+  console.log(`
+Invoice generator — Creowis CLI
+───────────────────────────────────────────
+This tool lets you:
+  • Create invoices         (invoice new)
+  • Send them via SMTP      (invoice send <id>)
+  • Pull received invoices  (invoice sync)
+  • Mark paid / overdue     (invoice mark <id> paid)
+  • Clone last month's      (invoice clone <id>)
+
+Setup is one-time. Each section can be re-run later via
+  invoice setup <section>
+
+Press Ctrl+C at any time — your progress is saved.
+───────────────────────────────────────────
+`);
+}
 
 export function register(program: Command): void {
   program
@@ -19,93 +55,85 @@ export function register(program: Command): void {
 }
 
 async function runInit(): Promise<void> {
-  console.log('Setting up the `invoice` CLI.\n');
+  printWelcome();
   const existing = loadConfigSafe();
   if (existing) console.log('Existing config found — press Enter to keep current values.\n');
 
+  // Draft persistence: if a previous init session was interrupted, offer to resume.
+  let draft: InitDraft = {};
+  if (draftExists('init')) {
+    const resume = await confirm({
+      message: 'Resume previous init session? (Your typed values will pre-fill the prompts.)',
+      default: true,
+    });
+    if (resume) {
+      draft = loadDraft<InitDraft>('init') ?? {};
+    } else {
+      clearDraft('init');
+    }
+  }
+  const persist = (patch: Partial<InitDraft>): void => {
+    draft = { ...draft, ...patch };
+    saveDraft('init', draft);
+  };
+
   // 1. Identity
-  const name = await input({ message: 'Your name:', default: existing?.name, required: true });
-  const email = await input({ message: 'Your email:', default: existing?.email, required: true });
+  const name = await input({
+    message: 'Your name:',
+    default: draft.name ?? existing?.name,
+    required: true,
+  });
+  const email = await input({
+    message: 'Your email:',
+    default: draft.email ?? existing?.email,
+    required: true,
+  });
   const currency = await input({
     message: 'Default currency (3-letter ISO code):',
-    default: existing?.currency ?? 'INR',
+    default: draft.currency ?? existing?.currency ?? 'INR',
   });
+  persist({ name, email, currency });
 
   // 2. Company info (optional). Captures company.name early so the number
   // format prompt below can suggest {COMPANY3}-... when set.
-  let companySection: Config['company'] | undefined = existing?.company;
+  let companySection: Config['company'] | undefined = draft.company ?? existing?.company;
   const wantsCompany = await confirm({
     message: 'Set up company info now? (used in the Billed By section)',
-    default: !existing?.company?.name,
+    default: !draft.company?.name && !existing?.company?.name,
   });
   if (wantsCompany) {
-    companySection = await setupCompany(existing?.company);
+    companySection = await setupCompany(draft.company ?? existing?.company);
+    persist({ company: companySection });
   }
 
   // 3. Invoice number format (uses company name for the suggested default)
   const numberFormat = await setupNumberFormat(
-    existing?.invoice.numberFormat ?? '',
+    draft.numberFormat ?? existing?.invoice.numberFormat ?? '',
     companySection?.name,
   );
+  persist({ numberFormat });
 
-  // 4. SMTP
+  // 4. SMTP — loop until verify succeeds or user gives up
   console.log('\n--- SMTP (sending) ---');
-  const smtpHost = await input({
-    message: 'SMTP host:',
-    default: existing?.smtp.host ?? 'smtp.gmail.com',
+  const smtp = await collectSmtp({
+    draft: draft.smtp,
+    existing: existing?.smtp,
+    defaultUser: email,
   });
-  const smtpPort = Number(
-    await input({ message: 'SMTP port:', default: String(existing?.smtp.port ?? 465) }),
-  );
-  const smtpUser = await input({
-    message: 'SMTP username:',
-    default: existing?.smtp.user ?? email,
-  });
-  const smtpPassExisting = getPassword(SMTP_PASSWORD_ACCOUNT);
-  const smtpPassInput = await passwordPrompt({
-    message: `SMTP app password${smtpPassExisting ? ' (press Enter to keep current)' : ''}:`,
-    mask: '*',
-  });
-  const smtpPass = smtpPassInput || smtpPassExisting;
-  if (!smtpPass) throw new Error('SMTP password is required.');
+  persist({ smtp: { host: smtp.host, port: smtp.port, user: smtp.user } });
+  const smtpPass = smtp.password;
 
-  console.log('Testing SMTP…');
-  const transporter = createTransport({
-    host: smtpHost,
-    port: smtpPort,
-    secure: smtpPort === 465,
-    auth: { user: smtpUser, pass: smtpPass },
-  });
-  try {
-    await transporter.verify();
-    console.log('SMTP OK.');
-  } finally {
-    transporter.close();
-  }
-
-  // 5. IMAP
+  // 5. IMAP — loop until connect succeeds or user gives up. Persist the
+  // connection AFTER the folder picker (folder is a required field on the
+  // draft).
   console.log('\n--- IMAP (sync) ---');
-  const imapHost = await input({
-    message: 'IMAP host:',
-    default: existing?.imap.host ?? 'imap.gmail.com',
+  const imapResult = await collectImap({
+    draft: draft.imap,
+    existing: existing?.imap,
+    defaultUser: smtp.user,
   });
-  const imapPort = Number(
-    await input({ message: 'IMAP port:', default: String(existing?.imap.port ?? 993) }),
-  );
-  const imapUser = await input({
-    message: 'IMAP username:',
-    default: existing?.imap.user ?? smtpUser,
-  });
-  const imapPassExisting = getPassword(IMAP_PASSWORD_ACCOUNT);
-  const imapPassInput = await passwordPrompt({
-    message: `IMAP app password${imapPassExisting ? ' (press Enter to keep current)' : ''}:`,
-    mask: '*',
-  });
-  const imapPass = imapPassInput || imapPassExisting;
-  if (!imapPass) throw new Error('IMAP password is required.');
-
-  console.log('Testing IMAP and listing folders…');
-  const client = await connect({ host: imapHost, port: imapPort, user: imapUser }, imapPass);
+  const imapPass = imapResult.password;
+  const client = imapResult.client;
   let folder: string;
   try {
     const folders = await listFolders(client);
@@ -128,17 +156,22 @@ async function runInit(): Promise<void> {
     }
   }
   console.log(`IMAP OK. Folder: ${folder}`);
+  persist({ imap: { ...imapResult.connection, folder } });
 
   // 6. Default recipients
   console.log('\n--- Default recipients ---');
   const toCsv = await input({
     message: "Default 'to' (comma-separated email addresses):",
-    default: existing?.mail.recipients.to.join(', ') ?? 'hello@creowis.com',
+    default:
+      draft.recipientsTo?.join(', ') ??
+      existing?.mail.recipients.to.join(', ') ??
+      'hello@creowis.com',
   });
   const toList = toCsv
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+  persist({ recipientsTo: toList });
 
   // 7. Optional sections — each gated on (y/N). Defaults to "yes" when no
   // value exists, "no" otherwise so re-running init doesn't make you re-walk
@@ -147,62 +180,74 @@ async function runInit(): Promise<void> {
     '\n--- Optional setup (skippable — you can run any of these later via `invoice setup <section>`) ---',
   );
 
-  let bankSection: Config['bank'] | undefined = existing?.bank;
+  let bankSection: Config['bank'] | undefined = draft.bank ?? existing?.bank;
   if (
     await confirm({
       message: 'Set up bank details now?',
-      default: !existing?.bank?.accountNumber,
+      default: !draft.bank?.accountNumber && !existing?.bank?.accountNumber,
     })
   ) {
-    bankSection = await setupBank(existing?.bank);
+    bankSection = await setupBank(draft.bank ?? existing?.bank);
+    persist({ bank: bankSection });
   }
 
-  let taxSection: TaxSection | undefined;
+  let taxSection: TaxSection | undefined = draft.tax;
   if (
     await confirm({
       message: 'Set up tax & payment defaults now?',
-      default: existing?.invoice.defaultTaxRate === undefined,
+      default:
+        draft.tax === undefined &&
+        existing?.invoice.defaultTaxRate === undefined,
     })
   ) {
     taxSection = await setupTax({
-      defaultTaxRate: existing?.invoice.defaultTaxRate,
-      taxLabel: existing?.invoice.taxLabel,
-      paymentInstructions: existing?.invoice.paymentInstructions,
+      defaultTaxRate: draft.tax?.defaultTaxRate ?? existing?.invoice.defaultTaxRate,
+      taxLabel: draft.tax?.taxLabel ?? existing?.invoice.taxLabel,
+      paymentInstructions:
+        draft.tax?.paymentInstructions ?? existing?.invoice.paymentInstructions,
     });
+    persist({ tax: taxSection });
   }
 
-  let mailExtras: Partial<Config['mail']> | undefined;
+  let mailExtras: Partial<Config['mail']> | undefined = draft.mailExtras;
   if (
     await confirm({
       message: 'Set up mail (subject template, body template, reply-to) now?',
-      default: !existing?.mail.subjectTemplate,
+      default: !draft.mailExtras?.subjectTemplate && !existing?.mail.subjectTemplate,
     })
   ) {
     const result = await setupMail({
       ...(existing?.mail ?? { recipients: { to: toList, cc: [], bcc: [] } }),
+      ...(draft.mailExtras ?? {}),
     });
     const { recipients: _recipients, ...rest } = result;
     mailExtras = rest;
+    persist({ mailExtras });
   }
 
-  let brandingSection: Config['branding'] | undefined = existing?.branding;
+  let brandingSection: Config['branding'] | undefined =
+    draft.branding ?? existing?.branding;
   if (
     await confirm({
       message: 'Set up branding & signature now?',
-      default: !existing?.branding?.primaryColor,
+      default: !draft.branding?.primaryColor && !existing?.branding?.primaryColor,
     })
   ) {
-    brandingSection = await setupBranding(existing?.branding);
+    brandingSection = await setupBranding(draft.branding ?? existing?.branding);
+    persist({ branding: brandingSection });
   }
 
-  let lineItemHeader: string | undefined;
+  let lineItemHeader: string | undefined = draft.lineItemHeader;
   if (
     await confirm({
       message: 'Set the line-item column header? (default "Description")',
       default: false,
     })
   ) {
-    lineItemHeader = await setupLineItemHeader(existing?.invoice.lineItemHeader);
+    lineItemHeader = await setupLineItemHeader(
+      draft.lineItemHeader ?? existing?.invoice.lineItemHeader,
+    );
+    persist({ lineItemHeader });
   }
 
   // Merge everything into a fresh config object and validate
@@ -211,8 +256,8 @@ async function runInit(): Promise<void> {
     name,
     email,
     currency,
-    smtp: { host: smtpHost, port: smtpPort, user: smtpUser },
-    imap: { host: imapHost, port: imapPort, user: imapUser, folder },
+    smtp: { host: smtp.host, port: smtp.port, user: smtp.user },
+    imap: { ...imapResult.connection, folder },
     mail: {
       ...(existing?.mail ?? {}),
       ...(mailExtras ?? {}),
@@ -238,6 +283,8 @@ async function runInit(): Promise<void> {
   const store = new SqliteStore(dbPath());
   store.close();
 
+  clearDraft('init');
+
   console.log('\nSetup complete. Try `invoice whoami`.');
 }
 
@@ -245,6 +292,107 @@ function specialRank(use?: string): number {
   if (use === '\\Sent') return 0;
   if (use === '\\Inbox') return 1;
   return 9;
+}
+
+/**
+ * Collect SMTP host/port/user/password and verify the connection. Loops on
+ * verify failure with a "retry?" prompt so a single typo doesn't tear down
+ * the whole init session.
+ */
+async function collectSmtp(args: {
+  draft?: { host: string; port: number; user: string };
+  existing?: { host: string; port: number; user: string };
+  defaultUser: string;
+}): Promise<{ host: string; port: number; user: string; password: string }> {
+  let host = args.draft?.host ?? args.existing?.host ?? 'smtp.gmail.com';
+  let port = args.draft?.port ?? args.existing?.port ?? 465;
+  let user = args.draft?.user ?? args.existing?.user ?? args.defaultUser;
+
+  while (true) {
+    host = await input({ message: 'SMTP host:', default: host });
+    port = Number(await input({ message: 'SMTP port:', default: String(port) }));
+    user = await input({ message: 'SMTP username:', default: user });
+    const existingPass = getPassword(SMTP_PASSWORD_ACCOUNT);
+    const passInput = await passwordPrompt({
+      message: `SMTP app password${existingPass ? ' (press Enter to keep current)' : ''}:`,
+      mask: '*',
+    });
+    const password = passInput || existingPass;
+    if (!password) {
+      console.error('SMTP password is required.');
+      continue;
+    }
+
+    console.log('Testing SMTP…');
+    const transporter = createTransport({
+      host,
+      port,
+      secure: port === 465,
+      auth: { user, pass: password },
+    });
+    try {
+      await transporter.verify();
+      console.log('SMTP OK.');
+      return { host, port, user, password };
+    } catch (err) {
+      console.error(`SMTP failed: ${err instanceof Error ? err.message : String(err)}`);
+      const retry = await confirm({
+        message: 'Retry with different credentials?',
+        default: true,
+      });
+      if (!retry) throw err;
+    } finally {
+      transporter.close();
+    }
+  }
+}
+
+/**
+ * Collect IMAP host/port/user/password and open a session. Loops on connect
+ * failure. Caller receives the connected client so it can fetch folders and
+ * close cleanly.
+ */
+async function collectImap(args: {
+  draft?: { host: string; port: number; user: string };
+  existing?: { host: string; port: number; user: string };
+  defaultUser: string;
+}): Promise<{
+  connection: { host: string; port: number; user: string };
+  password: string;
+  client: Awaited<ReturnType<typeof connect>>;
+}> {
+  let host = args.draft?.host ?? args.existing?.host ?? 'imap.gmail.com';
+  let port = args.draft?.port ?? args.existing?.port ?? 993;
+  let user = args.draft?.user ?? args.existing?.user ?? args.defaultUser;
+
+  while (true) {
+    host = await input({ message: 'IMAP host:', default: host });
+    port = Number(await input({ message: 'IMAP port:', default: String(port) }));
+    user = await input({ message: 'IMAP username:', default: user });
+    const existingPass = getPassword(IMAP_PASSWORD_ACCOUNT);
+    const passInput = await passwordPrompt({
+      message: `IMAP app password${existingPass ? ' (press Enter to keep current)' : ''}:`,
+      mask: '*',
+    });
+    const password = passInput || existingPass;
+    if (!password) {
+      console.error('IMAP password is required.');
+      continue;
+    }
+
+    console.log('Testing IMAP and listing folders…');
+    try {
+      const client = await connect({ host, port, user }, password);
+      return { connection: { host, port, user }, password, client };
+    } catch (err) {
+      console.error(`IMAP failed: ${err instanceof Error ? err.message : String(err)}`);
+      const retry = await confirm({
+        message: 'Retry with different credentials?',
+        default: true,
+      });
+      if (!retry) throw err;
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
