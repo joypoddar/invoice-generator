@@ -1,11 +1,21 @@
 import { randomUUID } from 'node:crypto';
 import type { Command } from 'commander';
-import { renderInvoiceNumber, totalFor, type Invoice } from '@invoice/shared';
+import { renderInvoiceNumber, totalFor, type Config, type Invoice } from '@invoice/shared';
 import { SqliteStore, prepareClone } from '@invoice/core';
 import { dbPath, loadConfigSafe, saveConfig } from '../store.js';
 import { exitWithResolveError, resolveInvoice } from '../resolver.js';
+import { performSend } from './send.js';
 
 export { prepareClone };
+
+interface CloneOptions {
+  send?: boolean;
+  yes?: boolean;
+  to?: string[];
+  cc?: string[];
+  bcc?: string[];
+  subject?: string;
+}
 
 export function register(program: Command): void {
   program
@@ -13,10 +23,16 @@ export function register(program: Command): void {
     .description(
       'Duplicate an existing invoice as a fresh draft (new id/number/dates; same customer + line items)',
     )
+    .option('--send', 'send the new invoice immediately after creating it')
+    .option('-y, --yes', 'skip the send confirmation prompt (only meaningful with --send)')
+    .option('--to <email...>', 'override recipients for the chained send')
+    .option('--cc <email...>', 'override cc recipients for the chained send')
+    .option('--bcc <email...>', 'override bcc recipients for the chained send')
+    .option('--subject <text>', 'override subject template for the chained send')
     .action(runClone);
 }
 
-async function runClone(sourceId: string): Promise<void> {
+async function runClone(sourceId: string, opts: CloneOptions): Promise<void> {
   const config = loadConfigSafe();
   if (!config) {
     console.error('Not configured. Run `invoice init` first.');
@@ -52,10 +68,11 @@ async function runClone(sourceId: string): Promise<void> {
     store.close();
   }
 
-  saveConfig({
+  const updatedConfig: Config = {
     ...config,
     invoice: { ...config.invoice, nextSeq: config.invoice.nextSeq + 1 },
-  });
+  };
+  saveConfig(updatedConfig);
 
   const customerName = String(cloned.default.customerName ?? '');
   const currency = String(cloned.default.currency ?? '');
@@ -66,6 +83,13 @@ async function runClone(sourceId: string): Promise<void> {
   console.log(`  issue:    ${String(cloned.default.issueDate ?? '')}`);
   console.log(`  due:      ${String(cloned.default.dueDate ?? '')}`);
   console.log(`  total:    ${totalFor(cloned).toFixed(2)} ${currency}`);
+
+  if (opts.send) {
+    const status = await performSend(updatedConfig, cloned, opts);
+    if (status === 'error') process.exit(1);
+    return;
+  }
+
   console.log(
     `\nReview with \`invoice list\`. Edit by hand if needed, then send with \`invoice send ${cloned.id}\`.`,
   );

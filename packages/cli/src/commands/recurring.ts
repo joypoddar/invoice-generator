@@ -15,9 +15,12 @@ import {
 } from '@invoice/core';
 import { dbPath, loadConfigSafe, saveConfig } from '../store.js';
 import { listTemplates, loadTemplate, templateExists } from '../templates.js';
+import { performSend } from './send.js';
 
 interface GenerateOptions {
   dryRun?: boolean;
+  send?: boolean;
+  yes?: boolean;
 }
 
 interface DeleteOptions {
@@ -48,6 +51,8 @@ export function register(program: Command): void {
     .command('generate')
     .description('Generate drafts for all recurrings whose next_run is on or before today')
     .option('--dry-run', 'print what would happen without writing')
+    .option('--send', 'send each generated draft (one confirm per draft; --yes skips all)')
+    .option('-y, --yes', 'skip the per-draft send confirmation (only meaningful with --send)')
     .action(runGenerate);
 
   cmd
@@ -293,8 +298,38 @@ async function runGenerate(opts: GenerateOptions): Promise<void> {
   for (const c of created) {
     console.log(`  ${c.name}: ${c.invoiceNumber} (issue ${c.issueDate}, id ${c.id})`);
   }
-  if (created.length > 0 && !opts.dryRun) {
+
+  if (created.length === 0 || opts.dryRun) return;
+
+  if (!opts.send) {
     console.log(`\nReview with \`invoice list\`. Send each with \`invoice send <id>\`.`);
+    return;
+  }
+
+  // Send each draft. Re-load config and re-read the invoice per iteration so
+  // that a save-on-send prompt from the previous draft is visible to the next.
+  console.log(`\nSending ${created.length} draft(s)…`);
+  for (const c of created) {
+    const fresh = loadConfigSafe();
+    if (!fresh) {
+      console.error('Config disappeared mid-loop; aborting remaining sends.');
+      break;
+    }
+    const inv = await loadInvoiceById(c.id);
+    if (!inv) {
+      console.error(`  ${c.invoiceNumber}: invoice ${c.id} not found in store; skipping.`);
+      continue;
+    }
+    await performSend(fresh, inv, { yes: opts.yes });
+  }
+}
+
+async function loadInvoiceById(id: string): Promise<Invoice | null> {
+  const store = new SqliteStore(dbPath());
+  try {
+    return await store.get(id);
+  } finally {
+    store.close();
   }
 }
 

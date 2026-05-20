@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Command } from 'commander';
 import { confirm } from '@inquirer/prompts';
-import { renderInvoiceNumber, totalFor } from '@invoice/shared';
+import { renderInvoiceNumber, totalFor, type Config } from '@invoice/shared';
 import { SqliteStore } from '@invoice/core';
 import { dbPath, loadConfigSafe, saveConfig } from '../store.js';
 import {
@@ -13,6 +13,16 @@ import {
   templateExists,
   templateFromInvoice,
 } from '../templates.js';
+import { performSend } from './send.js';
+
+interface UseOptions {
+  send?: boolean;
+  yes?: boolean;
+  to?: string[];
+  cc?: string[];
+  bcc?: string[];
+  subject?: string;
+}
 
 export function register(program: Command): void {
   const cmd = program
@@ -29,6 +39,12 @@ export function register(program: Command): void {
   cmd
     .command('use <name>')
     .description('Create a new draft invoice from a template (fresh id/number/dates)')
+    .option('--send', 'send the new invoice immediately after creating it')
+    .option('-y, --yes', 'skip the send confirmation prompt (only meaningful with --send)')
+    .option('--to <email...>', 'override recipients for the chained send')
+    .option('--cc <email...>', 'override cc recipients for the chained send')
+    .option('--bcc <email...>', 'override bcc recipients for the chained send')
+    .option('--subject <text>', 'override subject template for the chained send')
     .action(runUse);
 
   cmd
@@ -83,7 +99,7 @@ function runList(): void {
   console.log(renderTable(['Name', 'Customer', 'Currency', 'From'], rows));
 }
 
-async function runUse(name: string): Promise<void> {
+async function runUse(name: string, opts: UseOptions): Promise<void> {
   const config = loadConfigSafe();
   if (!config) {
     console.error('Not configured. Run `invoice init` first.');
@@ -120,10 +136,11 @@ async function runUse(name: string): Promise<void> {
     store.close();
   }
 
-  saveConfig({
+  const updatedConfig: Config = {
     ...config,
     invoice: { ...config.invoice, nextSeq: config.invoice.nextSeq + 1 },
-  });
+  };
+  saveConfig(updatedConfig);
 
   console.log(`\nCreated draft ${String(invoice.default.invoiceNumber)} from template "${name}"`);
   console.log(`  id:       ${invoice.id}`);
@@ -133,6 +150,13 @@ async function runUse(name: string): Promise<void> {
   console.log(
     `  total:    ${totalFor(invoice).toFixed(2)} ${String(invoice.default.currency ?? '')}`,
   );
+
+  if (opts.send) {
+    const status = await performSend(updatedConfig, invoice, opts);
+    if (status === 'error') process.exit(1);
+    return;
+  }
+
   console.log(`\nReview with \`invoice list\` then send with \`invoice send ${invoice.id}\`.`);
 }
 

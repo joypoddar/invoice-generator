@@ -1,12 +1,14 @@
 import type { Command } from 'commander';
 import { confirm } from '@inquirer/prompts';
-import { totalFor, type Invoice } from '@invoice/shared';
+import { ConfigSchema, totalFor, type Config, type Invoice } from '@invoice/shared';
 import { SqliteStore } from '@invoice/core';
-import { dbPath, loadConfigSafe } from '../store.js';
+import { dbPath, loadConfigSafe, saveConfig } from '../store.js';
 import { getPassword, SMTP_PASSWORD_ACCOUNT } from '../secrets.js';
 import { sendInvoice, type Recipients, type RenderOpts } from '../email.js';
 import { exitWithResolveError, resolveInvoice } from '../resolver.js';
 import { composeRecipients } from '../recipients.js';
+import { getCustomer, setCustomer, slugFor } from '../customers.js';
+import { setupCustomer } from './init.js';
 
 interface SendOptions {
   to?: string[];
@@ -15,6 +17,9 @@ interface SendOptions {
   subject?: string;
   yes?: boolean;
 }
+
+export type PerformSendOptions = SendOptions;
+export type PerformSendStatus = 'sent' | 'aborted' | 'error';
 
 export function register(program: Command): void {
   program
@@ -38,12 +43,6 @@ async function runSend(id: string, opts: SendOptions): Promise<void> {
     process.exit(1);
   }
 
-  const password = getPassword(SMTP_PASSWORD_ACCOUNT);
-  if (!password) {
-    console.error('SMTP password not in keychain. Run `invoice init` to set it.');
-    process.exit(1);
-  }
-
   const store = new SqliteStore(dbPath());
   let invoice: Invoice;
   try {
@@ -51,20 +50,43 @@ async function runSend(id: string, opts: SendOptions): Promise<void> {
     if (!result.ok) exitWithResolveError(id, result);
     invoice = result.invoice;
   } finally {
-    // re-opened later if/when we update the row; keep this scope tight
     store.close();
   }
+
+  const status = await performSend(config, invoice, opts);
+  if (status === 'error') process.exit(1);
+}
+
+/**
+ * Send a draft invoice end-to-end: compose recipients, confirm, SMTP-send,
+ * persist sent state, then offer to save the customer for future use.
+ *
+ * Used by `invoice send` and chained from `clone --send`, `template use --send`,
+ * `recurring generate --send`. Errors print to stderr and return `'error'` —
+ * the caller decides whether to exit.
+ */
+export async function performSend(
+  config: Config,
+  invoice: Invoice,
+  opts: PerformSendOptions,
+): Promise<PerformSendStatus> {
   if (invoice.status === 'sent') {
     console.error(
       `Invoice ${String(invoice.default.invoiceNumber)} was already sent at ${invoice.sentAt}.`,
     );
-    process.exit(1);
+    return 'error';
+  }
+
+  const password = getPassword(SMTP_PASSWORD_ACCOUNT);
+  if (!password) {
+    console.error('SMTP password not in keychain. Run `invoice init` to set it.');
+    return 'error';
   }
 
   const recipients = composeRecipients(config, invoice, opts);
   if (recipients.to.length === 0) {
     console.error('No recipients in `to` (set via --to or `mail.recipients.to` in config).');
-    process.exit(1);
+    return 'error';
   }
 
   printSummary(invoice, recipients, config.smtp.user);
@@ -74,7 +96,7 @@ async function runSend(id: string, opts: SendOptions): Promise<void> {
     const ok = await confirm({ message: 'Send?', default: false });
     if (!ok) {
       console.log('Aborted.');
-      return;
+      return 'aborted';
     }
   }
 
@@ -115,6 +137,65 @@ async function runSend(id: string, opts: SendOptions): Promise<void> {
   }
 
   console.log(`Sent. ${String(sentInvoice.default.invoiceNumber)} → ${recipients.to.join(', ')}`);
+
+  await maybePromptSaveCustomer(config, sentInvoice, recipients);
+  return 'sent';
+}
+
+async function maybePromptSaveCustomer(
+  config: Config,
+  invoice: Invoice,
+  recipients: Recipients,
+): Promise<void> {
+  const slug =
+    typeof invoice.default.customerSlug === 'string'
+      ? invoice.default.customerSlug
+      : undefined;
+  // Already linked to a saved customer? Don't ask.
+  if (slug && getCustomer(config, slug)) return;
+
+  const name =
+    typeof invoice.default.customerName === 'string'
+      ? invoice.default.customerName.trim()
+      : '';
+  if (!name) return;
+
+  // Already in directory by display name (case-insensitive)? Don't ask.
+  if (getCustomer(config, name)) return;
+
+  const ok = await confirm({
+    message: `Save "${name}" as a customer for next time?`,
+    default: true,
+  });
+  if (!ok) return;
+
+  const data = await setupCustomer({
+    name,
+    email: optString(invoice.default.customerEmail),
+    address: optString(invoice.default.customerAddress),
+    defaultRecipientTo: recipients.to,
+    defaultRecipientCc: recipients.cc ?? [],
+  });
+
+  const saveSlug = slugFor(data.name);
+  if (!saveSlug) {
+    console.log('  Skipped saving: name must contain at least one alphanumeric character.');
+    return;
+  }
+  if (config.customers[saveSlug]) {
+    console.log(
+      `  Skipped saving: slug "${saveSlug}" already exists. Use \`invoice customer save --force\` to update.`,
+    );
+    return;
+  }
+
+  const next = ConfigSchema.parse(setCustomer(config, saveSlug, data));
+  saveConfig(next);
+  console.log(`  Saved customer "${data.name}" (slug: ${saveSlug}).`);
+}
+
+function optString(v: unknown): string | undefined {
+  return typeof v === 'string' && v.length > 0 ? v : undefined;
 }
 
 function printSummary(invoice: Invoice, recipients: Recipients, fromAddress: string): void {
