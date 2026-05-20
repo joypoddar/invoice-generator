@@ -14,6 +14,8 @@ import {
   templateFromInvoice,
 } from '../templates.js';
 import { performSend } from './send.js';
+import { bumpCustomerSeq } from '../customers.js';
+import { resolveNumberSpec } from '../invoice-number.js';
 
 interface UseOptions {
   send?: boolean;
@@ -112,14 +114,20 @@ async function runUse(name: string, opts: UseOptions): Promise<void> {
     process.exit(1);
   }
 
+  const templateSlug =
+    typeof template.default.customerSlug === 'string'
+      ? template.default.customerSlug
+      : undefined;
+  const numberSpec = resolveNumberSpec(config, templateSlug);
+
   const today = new Date();
   const issueDate = toIsoDate(today);
   const dueDate = toIsoDate(addDays(today, config.invoice.defaultDueDays));
   const invoiceNumber = renderInvoiceNumber(
-    config.invoice.numberFormat,
-    config.invoice.nextSeq,
+    numberSpec.format,
+    numberSpec.seq,
     today,
-    config.company.name,
+    numberSpec.companyName,
   );
 
   const invoice = materializeFromTemplate(template, {
@@ -136,10 +144,12 @@ async function runUse(name: string, opts: UseOptions): Promise<void> {
     store.close();
   }
 
-  const updatedConfig: Config = {
-    ...config,
-    invoice: { ...config.invoice, nextSeq: config.invoice.nextSeq + 1 },
-  };
+  const updatedConfig: Config = numberSpec.customerSlug
+    ? bumpCustomerSeq(config, numberSpec.customerSlug)
+    : {
+        ...config,
+        invoice: { ...config.invoice, nextSeq: config.invoice.nextSeq + 1 },
+      };
   saveConfig(updatedConfig);
 
   console.log(`\nCreated draft ${String(invoice.default.invoiceNumber)} from template "${name}"`);

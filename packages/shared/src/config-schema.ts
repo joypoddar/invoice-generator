@@ -60,6 +60,8 @@ export const ConfigSchema = z.object({
         phone: z.string().optional(),
         defaultRecipientTo: z.array(z.string().email()).default([]),
         defaultRecipientCc: z.array(z.string().email()).default([]),
+        numberFormat: z.string().optional(),
+        nextSeq: z.number().int().nonnegative().default(1),
       }),
     )
     .default({}),

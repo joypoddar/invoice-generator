@@ -43,6 +43,7 @@ describe('composeRecipients', () => {
       name: 'Acme',
       defaultRecipientTo: ['pay@acme.com', 'finance@acme.com'],
       defaultRecipientCc: ['cc@acme.com'],
+      nextSeq: 1,
     });
     const r = composeRecipients(cfg, invoiceWith('acme'));
     expect(r.to).toEqual(['pay@acme.com', 'finance@acme.com']);
@@ -55,6 +56,7 @@ describe('composeRecipients', () => {
       name: 'Acme',
       defaultRecipientTo: [],
       defaultRecipientCc: [],
+      nextSeq: 1,
     });
     const r = composeRecipients(cfg, invoiceWith('acme'));
     expect(r.to).toEqual(['hello@creowis.com']);
@@ -66,6 +68,7 @@ describe('composeRecipients', () => {
       name: 'Acme',
       defaultRecipientTo: ['pay@acme.com'],
       defaultRecipientCc: ['cc@acme.com'],
+      nextSeq: 1,
     });
     const r = composeRecipients(cfg, invoiceWith('acme'), {
       to: ['adhoc@example.com'],

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ConfigSchema, type Config } from '@invoice/shared';
 import {
+  bumpCustomerSeq,
   customerExists,
   deleteCustomer,
   getCustomer,
@@ -25,6 +26,7 @@ function customer(name: string, overrides: Partial<CustomerData> = {}): Customer
     name,
     defaultRecipientTo: [],
     defaultRecipientCc: [],
+    nextSeq: 1,
     ...overrides,
   };
 }
@@ -117,6 +119,57 @@ describe('setCustomer / deleteCustomer', () => {
     const cfg = setCustomer(baseConfig(), 'acme', customer('Acme'));
     const next = deleteCustomer(cfg, 'globex');
     expect(next).toBe(cfg);
+  });
+});
+
+describe('customer schema defaults', () => {
+  it('fills missing nextSeq with 1', () => {
+    const cfg = ConfigSchema.parse({
+      name: 'Joy',
+      email: 'joy@creowis.com',
+      smtp: { host: 's', port: 1, user: 'u' },
+      imap: { host: 's', port: 1, user: 'u', folder: 'INBOX' },
+      mail: { recipients: { to: ['x@example.com'] } },
+      customers: {
+        acme: { name: 'Acme' },
+      },
+    });
+    expect(cfg.customers['acme']?.nextSeq).toBe(1);
+    expect(cfg.customers['acme']?.numberFormat).toBeUndefined();
+  });
+
+  it('preserves an explicit numberFormat + nextSeq', () => {
+    const cfg = ConfigSchema.parse({
+      name: 'Joy',
+      email: 'joy@creowis.com',
+      smtp: { host: 's', port: 1, user: 'u' },
+      imap: { host: 's', port: 1, user: 'u', folder: 'INBOX' },
+      mail: { recipients: { to: ['x@example.com'] } },
+      customers: {
+        acme: { name: 'Acme', numberFormat: 'ACME-{YYYY}-{SEQ}', nextSeq: 42 },
+      },
+    });
+    expect(cfg.customers['acme']?.numberFormat).toBe('ACME-{YYYY}-{SEQ}');
+    expect(cfg.customers['acme']?.nextSeq).toBe(42);
+  });
+});
+
+describe('bumpCustomerSeq', () => {
+  it('increments nextSeq by 1', () => {
+    const cfg = setCustomer(baseConfig(), 'acme', customer('Acme', { nextSeq: 5 }));
+    const next = bumpCustomerSeq(cfg, 'acme');
+    expect(next.customers['acme']?.nextSeq).toBe(6);
+  });
+
+  it('does not mutate the input config', () => {
+    const cfg = setCustomer(baseConfig(), 'acme', customer('Acme', { nextSeq: 5 }));
+    bumpCustomerSeq(cfg, 'acme');
+    expect(cfg.customers['acme']?.nextSeq).toBe(5);
+  });
+
+  it('is a no-op when the slug is unknown', () => {
+    const cfg = baseConfig();
+    expect(bumpCustomerSeq(cfg, 'ghost')).toBe(cfg);
   });
 });
 

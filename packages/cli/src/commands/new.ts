@@ -6,7 +6,14 @@ import { SqliteStore } from '@invoice/core';
 import { dbPath, loadConfigSafe, saveConfig } from '../store.js';
 import { readMultiline } from './init.js';
 import { clearDraft, draftExists, loadDraft, saveDraft } from '../drafts.js';
-import { findCustomerSlug, getCustomer, listCustomers } from '../customers.js';
+import {
+  bumpCustomerSeq,
+  findCustomerSlug,
+  getCustomer,
+  listCustomers,
+  type CustomerData,
+} from '../customers.js';
+import { resolveNumberSpec } from '../invoice-number.js';
 
 interface NewDraft {
   invoiceId?: string;
@@ -62,44 +69,29 @@ async function runNew(opts: NewOptions): Promise<void> {
 
   const today = new Date();
   // Reuse identity from draft if resuming so the new invoice keeps a single
-  // id / number / issue date across the resumed session.
+  // id / issue date across the resumed session. invoiceNumber is computed
+  // later (after the customer step) so it can use the customer's numberFormat.
   const issueDate = draft.issueDate ?? toIsoDate(today);
   const dueDate =
     draft.dueDate ?? toIsoDate(addDays(today, config.invoice.defaultDueDays));
-  const invoiceNumber =
-    draft.invoiceNumber ??
-    renderInvoiceNumber(
-      config.invoice.numberFormat,
-      config.invoice.nextSeq,
-      today,
-      config.company.name,
-    );
   const invoiceId = draft.invoiceId ?? randomUUID();
-  persist({ invoiceId, invoiceNumber, issueDate, dueDate });
+  persist({ invoiceId, issueDate, dueDate });
 
-  console.log(`\nNew invoice: ${invoiceNumber}`);
-  console.log(`  id: ${invoiceId}\n`);
-
-  // Customer picker: only when not resuming past this step. A non-empty
-  // `draft.customerName` means the prior session had already chosen.
+  // Customer step: pick from directory (--customer flag or interactive picker)
+  // or fall through to fresh manual entry. A non-empty `draft.customerName`
+  // means the prior session already chose and we should skip both the picker
+  // and the per-field prompts.
   let customerSlug: string | undefined = draft.customerSlug;
   if (draft.customerName === undefined && opts.customer) {
     const picked = getCustomer(config, opts.customer);
     if (!picked) {
-      console.error(`No customer matching "${opts.customer}". Use \`invoice customer list\` to see saved customers.`);
+      console.error(
+        `No customer matching "${opts.customer}". Use \`invoice customer list\` to see saved customers.`,
+      );
       process.exit(1);
     }
     customerSlug = findCustomerSlug(config, opts.customer) ?? undefined;
-    draft.customerName = picked.name;
-    draft.customerEmail = picked.email ?? '';
-    if (picked.address !== undefined) draft.customerAddress = picked.address;
-    persist({
-      customerSlug,
-      customerName: picked.name,
-      customerEmail: picked.email ?? '',
-      customerAddress: picked.address,
-    });
-    console.log(`  Using saved customer: ${picked.name}`);
+    applyPickedCustomer(picked, customerSlug, persist);
   }
   if (draft.customerName === undefined) {
     const saved = listCustomers(config);
@@ -117,34 +109,42 @@ async function runNew(opts: NewOptions): Promise<void> {
         const picked = getCustomer(config, choice);
         if (picked) {
           customerSlug = choice;
-          draft.customerName = picked.name;
-          draft.customerEmail = picked.email ?? '';
-          if (picked.address !== undefined) draft.customerAddress = picked.address;
-          persist({
-            customerSlug,
-            customerName: picked.name,
-            customerEmail: picked.email ?? '',
-            customerAddress: picked.address,
-          });
-          console.log(`  Using saved customer: ${picked.name}`);
+          applyPickedCustomer(picked, customerSlug, persist);
         }
       }
     }
   }
 
-  const customerName = await input({
-    message: 'Customer name:',
-    default: draft.customerName,
-    required: true,
-  });
-  persist({ customerName });
-  const customerEmail = await input({
-    message: 'Customer email:',
-    default: draft.customerEmail ?? '',
-  });
-  persist({ customerEmail });
-  const customerAddress = await readMultiline('Customer address (optional)', draft.customerAddress);
-  persist({ customerAddress });
+  // Per-field prompts only run when the data isn't already in the draft.
+  // Picked customers populate draft.customerName (always) + email/address
+  // (when present on the record). Resumed drafts populate everything that
+  // the prior session collected. In both cases, `draft.X ?? input(...)`
+  // skips the prompt — eliminating the "Press Enter on Line 1 to keep"
+  // confusion entirely.
+  const customerName =
+    draft.customerName ?? (await input({ message: 'Customer name:', required: true }));
+  if (draft.customerName === undefined) persist({ customerName });
+  const customerEmail =
+    draft.customerEmail ?? (await input({ message: 'Customer email:', default: '' }));
+  if (draft.customerEmail === undefined) persist({ customerEmail });
+  const customerAddress =
+    draft.customerAddress ?? (await readMultiline('Customer address (optional)', undefined));
+  if (draft.customerAddress === undefined) persist({ customerAddress });
+
+  // Now that customerSlug is locked in, resolve the right format/seq.
+  const numberSpec = resolveNumberSpec(config, customerSlug);
+  const invoiceNumber =
+    draft.invoiceNumber ??
+    renderInvoiceNumber(
+      numberSpec.format,
+      numberSpec.seq,
+      new Date(issueDate),
+      numberSpec.companyName,
+    );
+  persist({ invoiceNumber });
+
+  console.log(`\nNew invoice: ${invoiceNumber}`);
+  console.log(`  id: ${invoiceId}\n`);
   const currency = await input({
     message: 'Currency:',
     default: draft.currency ?? config.currency,
@@ -226,10 +226,14 @@ async function runNew(opts: NewOptions): Promise<void> {
     store.close();
   }
 
-  saveConfig({
-    ...config,
-    invoice: { ...config.invoice, nextSeq: config.invoice.nextSeq + 1 },
-  });
+  // Bump the counter that actually owns this invoice's number.
+  const bumpedConfig = numberSpec.customerSlug
+    ? bumpCustomerSeq(config, numberSpec.customerSlug)
+    : {
+        ...config,
+        invoice: { ...config.invoice, nextSeq: config.invoice.nextSeq + 1 },
+      };
+  saveConfig(bumpedConfig);
 
   clearDraft('new');
 
@@ -320,4 +324,16 @@ function coerce(value: string): unknown {
   } catch {
     return value;
   }
+}
+
+function applyPickedCustomer(
+  c: CustomerData,
+  slug: string | undefined,
+  persist: (patch: Partial<NewDraft>) => void,
+): void {
+  const patch: Partial<NewDraft> = { customerSlug: slug, customerName: c.name };
+  if (c.email) patch.customerEmail = c.email;
+  if (c.address) patch.customerAddress = c.address;
+  persist(patch);
+  console.log(`  Using saved customer: ${c.name}`);
 }

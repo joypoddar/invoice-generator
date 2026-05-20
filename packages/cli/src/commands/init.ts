@@ -614,14 +614,48 @@ export async function setupCustomer(prefill?: Partial<CustomerData>): Promise<Cu
     .map((s) => s.trim())
     .filter(Boolean);
 
+  // Per-customer invoice numbering (optional). When set, this customer's
+  // invoices use this format + counter instead of the global one. Inside
+  // a customer's format, `{COMPANY3}` resolves to the *customer's* name
+  // initials, not the sender's.
+  let numberFormat: string | undefined = prefill?.numberFormat;
+  let nextSeq: number = prefill?.nextSeq ?? 1;
+  const customizeNumber = await confirm({
+    message: 'Customize invoice number format for this customer?',
+    default: !!prefill?.numberFormat,
+  });
+  if (customizeNumber) {
+    console.log(
+      "  Placeholders: {SEQ} {YYYY} {MM} {DD} {COMPANY3}  (here {COMPANY3} = this customer's initials)",
+    );
+    const fmt = await input({
+      message: 'Number format:',
+      default: prefill?.numberFormat ?? '{COMPANY3}-{YYYY}-{SEQ}',
+    });
+    numberFormat = fmt.trim() || undefined;
+    if (numberFormat) {
+      const seqStr = await input({
+        message: 'Starting sequence:',
+        default: String(prefill?.nextSeq ?? 1),
+        validate: (v: string) => {
+          const n = Number(v);
+          return Number.isInteger(n) && n >= 1 ? true : 'Enter a positive integer';
+        },
+      });
+      nextSeq = Number(seqStr);
+    }
+  }
+
   const customer: CustomerData = {
     name,
     defaultRecipientTo,
     defaultRecipientCc,
+    nextSeq,
   };
   if (email) customer.email = email;
   if (address) customer.address = address;
   if (phone) customer.phone = phone;
+  if (numberFormat) customer.numberFormat = numberFormat;
   return customer;
 }
 

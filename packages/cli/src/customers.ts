@@ -65,6 +65,23 @@ export function setCustomer(config: Config, slug: string, data: CustomerData): C
 }
 
 /**
+ * Return a new config with the given customer's `nextSeq` incremented by 1.
+ * No-op if the slug doesn't exist (defensive — caller should have validated
+ * the slug already). Used after a customer-scoped invoice number is consumed.
+ */
+export function bumpCustomerSeq(config: Config, slug: string): Config {
+  const existing = config.customers[slug];
+  if (!existing) return config;
+  return {
+    ...config,
+    customers: {
+      ...config.customers,
+      [slug]: { ...existing, nextSeq: existing.nextSeq + 1 },
+    },
+  };
+}
+
+/**
  * Return a new config with the named customer removed. No-op if the slug
  * doesn't exist (so callers don't need to pre-check).
  */

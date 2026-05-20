@@ -5,6 +5,8 @@ import { SqliteStore, prepareClone } from '@invoice/core';
 import { dbPath, loadConfigSafe, saveConfig } from '../store.js';
 import { exitWithResolveError, resolveInvoice } from '../resolver.js';
 import { performSend } from './send.js';
+import { bumpCustomerSeq } from '../customers.js';
+import { resolveNumberSpec } from '../invoice-number.js';
 
 export { prepareClone };
 
@@ -41,19 +43,26 @@ async function runClone(sourceId: string, opts: CloneOptions): Promise<void> {
 
   const store = new SqliteStore(dbPath());
   let cloned: Invoice;
+  let numberSpec: ReturnType<typeof resolveNumberSpec>;
   try {
     const result = await resolveInvoice(store, sourceId);
     if (!result.ok) exitWithResolveError(sourceId, result);
     const source = result.invoice;
 
+    const sourceSlug =
+      typeof source.default.customerSlug === 'string'
+        ? source.default.customerSlug
+        : undefined;
+    numberSpec = resolveNumberSpec(config, sourceSlug);
+
     const today = new Date();
     const issueDate = toIsoDate(today);
     const dueDate = toIsoDate(addDays(today, config.invoice.defaultDueDays));
     const invoiceNumber = renderInvoiceNumber(
-      config.invoice.numberFormat,
-      config.invoice.nextSeq,
+      numberSpec.format,
+      numberSpec.seq,
       today,
-      config.company.name,
+      numberSpec.companyName,
     );
 
     cloned = prepareClone(source, {
@@ -68,10 +77,12 @@ async function runClone(sourceId: string, opts: CloneOptions): Promise<void> {
     store.close();
   }
 
-  const updatedConfig: Config = {
-    ...config,
-    invoice: { ...config.invoice, nextSeq: config.invoice.nextSeq + 1 },
-  };
+  const updatedConfig: Config = numberSpec.customerSlug
+    ? bumpCustomerSeq(config, numberSpec.customerSlug)
+    : {
+        ...config,
+        invoice: { ...config.invoice, nextSeq: config.invoice.nextSeq + 1 },
+      };
   saveConfig(updatedConfig);
 
   const customerName = String(cloned.default.customerName ?? '');

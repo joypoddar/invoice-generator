@@ -16,6 +16,9 @@ import {
 import { dbPath, loadConfigSafe, saveConfig } from '../store.js';
 import { listTemplates, loadTemplate, templateExists } from '../templates.js';
 import { performSend } from './send.js';
+import { resolveNumberSpec } from '../invoice-number.js';
+import type { Template } from '@invoice/core';
+import type { Config } from '@invoice/shared';
 
 interface GenerateOptions {
   dryRun?: boolean;
@@ -231,7 +234,9 @@ async function runGenerate(opts: GenerateOptions): Promise<void> {
 
   const store = new SqliteStore(dbPath());
   const created: { name: string; invoiceNumber: string; id: string; issueDate: string }[] = [];
+  // In-memory counters mirror what config holds; we save the deltas at the end.
   let mutableNextSeq = config.invoice.nextSeq;
+  const mutableCustomerSeqs: Record<string, number> = {};
   try {
     const due = store.findDueRecurrings(todayIso);
     if (due.length === 0) {
@@ -240,6 +245,16 @@ async function runGenerate(opts: GenerateOptions): Promise<void> {
     }
 
     for (const rec of due) {
+      // Resolve the source ONCE per recurring so we know which counter to use
+      // for every draft this recurring will generate this run.
+      const source = await loadRecurringSource(rec, store);
+      const sourceSlug = extractCustomerSlug(source);
+      const specSeed = resolveNumberSpec(config, sourceSlug);
+      const useCustomerCounter = specSeed.customerSlug !== undefined;
+      if (useCustomerCounter && !(specSeed.customerSlug! in mutableCustomerSeqs)) {
+        mutableCustomerSeqs[specSeed.customerSlug!] = specSeed.seq;
+      }
+
       // Walk forward in time, generating one draft per missed period until
       // next_run exceeds today (or end_date if set).
       let nextRunIso = rec.nextRun;
@@ -251,15 +266,18 @@ async function runGenerate(opts: GenerateOptions): Promise<void> {
         const dueDate = toIsoDate(
           addDays(new Date(nextRunIso), config.invoice.defaultDueDays),
         );
+        const seq = useCustomerCounter
+          ? mutableCustomerSeqs[specSeed.customerSlug!]!
+          : mutableNextSeq;
         const invoiceNumber = renderInvoiceNumber(
-          config.invoice.numberFormat,
-          mutableNextSeq,
+          specSeed.format,
+          seq,
           new Date(issueDate),
-          config.company.name,
+          specSeed.companyName,
         );
         const id = randomUUID();
 
-        const newInvoice = await buildInvoice(rec, store, {
+        const newInvoice = buildFromSource(source, rec, {
           id,
           invoiceNumber,
           issueDate,
@@ -271,7 +289,11 @@ async function runGenerate(opts: GenerateOptions): Promise<void> {
         }
 
         created.push({ name: rec.name, invoiceNumber, id, issueDate });
-        mutableNextSeq += 1;
+        if (useCustomerCounter) {
+          mutableCustomerSeqs[specSeed.customerSlug!] = seq + 1;
+        } else {
+          mutableNextSeq += 1;
+        }
 
         // Advance next_run
         const nextDate = computeNextRun(new Date(nextRunIso), rec.frequency);
@@ -286,11 +308,12 @@ async function runGenerate(opts: GenerateOptions): Promise<void> {
     store.close();
   }
 
-  if (!opts.dryRun && mutableNextSeq !== config.invoice.nextSeq) {
-    saveConfig({
-      ...config,
-      invoice: { ...config.invoice, nextSeq: mutableNextSeq },
-    });
+  if (!opts.dryRun) {
+    const seqChanged = mutableNextSeq !== config.invoice.nextSeq;
+    const customerSeqsChanged = Object.keys(mutableCustomerSeqs).length > 0;
+    if (seqChanged || customerSeqsChanged) {
+      saveConfig(applySeqUpdates(config, mutableNextSeq, mutableCustomerSeqs));
+    }
   }
 
   const prefix = opts.dryRun ? '[dry-run] ' : '';
@@ -333,11 +356,10 @@ async function loadInvoiceById(id: string): Promise<Invoice | null> {
   }
 }
 
-async function buildInvoice(
+async function loadRecurringSource(
   rec: RecurringInvoice,
   store: SqliteStore,
-  overrides: { id: string; invoiceNumber: string; issueDate: string; dueDate: string },
-): Promise<Invoice> {
+): Promise<Invoice | Template> {
   if (rec.sourceKind === 'invoice') {
     const source = await store.get(rec.sourceRef);
     if (!source) {
@@ -345,7 +367,7 @@ async function buildInvoice(
         `Recurring "${rec.name}" references invoice id ${rec.sourceRef} which no longer exists`,
       );
     }
-    return prepareClone(source, overrides);
+    return source;
   }
   if (!templateExists(rec.sourceRef)) {
     throw new Error(
@@ -356,7 +378,42 @@ async function buildInvoice(
   if (!template) {
     throw new Error(`Recurring "${rec.name}" template "${rec.sourceRef}" failed to load`);
   }
-  return materializeFromTemplate(template, overrides);
+  return template;
+}
+
+function extractCustomerSlug(source: Invoice | Template): string | undefined {
+  return typeof source.default.customerSlug === 'string'
+    ? source.default.customerSlug
+    : undefined;
+}
+
+function buildFromSource(
+  source: Invoice | Template,
+  rec: RecurringInvoice,
+  overrides: { id: string; invoiceNumber: string; issueDate: string; dueDate: string },
+): Invoice {
+  if (rec.sourceKind === 'invoice') {
+    return prepareClone(source as Invoice, overrides);
+  }
+  return materializeFromTemplate(source as Template, overrides);
+}
+
+function applySeqUpdates(
+  config: Config,
+  nextSeq: number,
+  customerSeqs: Record<string, number>,
+): Config {
+  const updatedCustomers = { ...config.customers };
+  for (const [slug, seq] of Object.entries(customerSeqs)) {
+    const existing = updatedCustomers[slug];
+    if (!existing) continue;
+    updatedCustomers[slug] = { ...existing, nextSeq: seq };
+  }
+  return {
+    ...config,
+    invoice: { ...config.invoice, nextSeq },
+    customers: updatedCustomers,
+  };
 }
 
 function runScheduleHelp(): void {
