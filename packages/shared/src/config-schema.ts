@@ -50,6 +50,20 @@ export const ConfigSchema = z.object({
     })
     .default({}),
 
+  customers: z
+    .record(
+      z.string(),
+      z.object({
+        name: z.string().min(1),
+        email: z.string().email().optional(),
+        address: z.string().optional(),
+        phone: z.string().optional(),
+        defaultRecipientTo: z.array(z.string().email()).default([]),
+        defaultRecipientCc: z.array(z.string().email()).default([]),
+      }),
+    )
+    .default({}),
+
   smtp: z.object({
     host: z.string().min(1),
     port: z.number().int().positive(),
