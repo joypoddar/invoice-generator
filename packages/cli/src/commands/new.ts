@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type { Command } from 'commander';
-import { confirm, input } from '@inquirer/prompts';
+import { confirm, input, select } from '@inquirer/prompts';
 import { renderInvoiceNumber, type Invoice, type LineItem } from '@invoice/shared';
 import { SqliteStore } from '@invoice/core';
 import { dbPath, loadConfigSafe, saveConfig } from '../store.js';
 import { readMultiline } from './init.js';
 import { clearDraft, draftExists, loadDraft, saveDraft } from '../drafts.js';
+import { getCustomer, listCustomers } from '../customers.js';
 
 interface NewDraft {
   invoiceId?: string;
@@ -15,6 +16,7 @@ interface NewDraft {
   customerName?: string;
   customerEmail?: string;
   customerAddress?: string;
+  customerSlug?: string;
   currency?: string;
   lineItems?: LineItem[];
   notes?: string;
@@ -72,6 +74,40 @@ async function runNew(): Promise<void> {
 
   console.log(`\nNew invoice: ${invoiceNumber}`);
   console.log(`  id: ${invoiceId}\n`);
+
+  // Customer picker: only when not resuming past this step. A non-empty
+  // `draft.customerName` means the prior session had already chosen.
+  let customerSlug: string | undefined = draft.customerSlug;
+  if (draft.customerName === undefined) {
+    const saved = listCustomers(config);
+    if (saved.length > 0) {
+      const NEW_SENTINEL = '__new__';
+      const choice = await select({
+        message: 'Bill to (pick a saved customer or create new):',
+        choices: [
+          ...saved.map(([slug, c]) => ({ name: c.name, value: slug })),
+          { name: '+ New customer', value: NEW_SENTINEL },
+        ],
+        default: NEW_SENTINEL,
+      });
+      if (choice !== NEW_SENTINEL) {
+        const picked = getCustomer(config, choice);
+        if (picked) {
+          customerSlug = choice;
+          draft.customerName = picked.name;
+          draft.customerEmail = picked.email ?? '';
+          if (picked.address !== undefined) draft.customerAddress = picked.address;
+          persist({
+            customerSlug,
+            customerName: picked.name,
+            customerEmail: picked.email ?? '',
+            customerAddress: picked.address,
+          });
+          console.log(`  Using saved customer: ${picked.name}`);
+        }
+      }
+    }
+  }
 
   const customerName = await input({
     message: 'Customer name:',
@@ -147,6 +183,7 @@ async function runNew(): Promise<void> {
       customerName,
       customerEmail,
       customerAddress,
+      customerSlug,
       currency,
       lineItems,
       taxRate,
@@ -194,6 +231,7 @@ interface SnapshotInputs {
   customerName: string;
   customerEmail: string;
   customerAddress: string | undefined;
+  customerSlug: string | undefined;
   currency: string;
   lineItems: LineItem[];
   taxRate: number | undefined;
@@ -218,6 +256,7 @@ function snapshotDefaults(i: SnapshotInputs): Record<string, unknown> {
     customerName: i.customerName,
     customerEmail: i.customerEmail,
     customerAddress: i.customerAddress,
+    customerSlug: i.customerSlug,
     lineItems: i.lineItems,
     lineItemHeader: c.invoice.lineItemHeader,
     currency: i.currency,

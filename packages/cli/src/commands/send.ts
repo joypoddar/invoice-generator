@@ -6,6 +6,7 @@ import { dbPath, loadConfigSafe } from '../store.js';
 import { getPassword, SMTP_PASSWORD_ACCOUNT } from '../secrets.js';
 import { sendInvoice, type Recipients, type RenderOpts } from '../email.js';
 import { exitWithResolveError, resolveInvoice } from '../resolver.js';
+import { composeRecipients } from '../recipients.js';
 
 interface SendOptions {
   to?: string[];
@@ -60,7 +61,7 @@ async function runSend(id: string, opts: SendOptions): Promise<void> {
     process.exit(1);
   }
 
-  const recipients = composeRecipients(config.mail.recipients, opts);
+  const recipients = composeRecipients(config, invoice, opts);
   if (recipients.to.length === 0) {
     console.error('No recipients in `to` (set via --to or `mail.recipients.to` in config).');
     process.exit(1);
@@ -114,17 +115,6 @@ async function runSend(id: string, opts: SendOptions): Promise<void> {
   }
 
   console.log(`Sent. ${String(sentInvoice.default.invoiceNumber)} → ${recipients.to.join(', ')}`);
-}
-
-function composeRecipients(
-  base: { to: string[]; cc: string[]; bcc: string[] },
-  opts: SendOptions,
-): Recipients {
-  return {
-    to: opts.to ?? base.to,
-    cc: opts.cc ?? base.cc,
-    bcc: opts.bcc ?? base.bcc,
-  };
 }
 
 function printSummary(invoice: Invoice, recipients: Recipients, fromAddress: string): void {
