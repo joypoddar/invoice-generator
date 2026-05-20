@@ -1494,6 +1494,141 @@ No changes needed to `invoice customer save` itself (it already delegates to `se
 - Migrating existing global-format invoices to a per-customer counter retroactively. Old invoices keep their old number (UUID is the real key; numbers are display-only).
 - Showing a `numberFormat` column in `invoice customer list` — would clutter the table. Use `invoice customer show <ref>` to see it.
 
+## Phase 4.9 — Receive-only init: make SMTP optional + folder-picker hint + dual-role doc
+
+### Context
+
+The current `invoice init` is a one-size-fits-all flow that requires SMTP + IMAP + recipients + number format up front. That's wrong for the **account head** role — a person whose only job is to process incoming invoices (mark them paid, search them, export CSV, run the dashboard). They never send anything, so the SMTP block / recipients / number-format prompts are noise. Today they have to type dummy SMTP credentials just to finish init.
+
+The two real roles fall out of two independent dimensions, not one binary mode:
+
+- **Sending capability** = does this install have SMTP creds? (Optional.)
+- **IMAP folder scope** = which folder does it sync from? (Always set; `Sent` for senders, `INBOX` of a shared mailbox for account heads.)
+
+A pure account head = no SMTP + `imap.folder = INBOX`. A pure sender = SMTP + `imap.folder = Sent`. They have **all the same features** — `list`, `ls`, `search`, `last`, `mark paid|unpaid`, `sync`, `config doctor`, `whoami`, and the Phase 5 dashboard work for both. Only the send-side commands (`send`, `resend`, `clone --send`, `template use --send`, `recurring generate --send`) require SMTP.
+
+The dual-role case (one person who sometimes sends and sometimes acts as account head) is handled by the existing `INVOICE_HOME` pattern — two config dirs, one per hat. No code change needed; it just needs documentation.
+
+### Decisions confirmed
+
+- **Inline `Set up sending? (Y/n)` prompt** in `invoice init` (skip-as-you-go pattern, matching Phase 4.6's optional-section style). Default `Y` so first-time senders aren't surprised. Saying `N` skips the SMTP block + recipients + number-format prompt + mail-templates block in one go. No new mode/role concept in the schema — capability is implicit (does `config.smtp` exist).
+- **Schema**: `smtp` and `mail` become `.optional()` at the top level. Existing configs (which have both filled) keep parsing unchanged.
+- **Runtime checks** in `performSend` (and any other send-path entry): early `'error'` return with a friendly `"Sending isn't configured for this install. Run \`invoice setup smtp\` to enable sending."`instead of a TypeError on`config.smtp.host`.
+- **`invoice setup smtp`** + **`invoice setup recipients`** as the "promote a receive-only install to also-sender later" path. `invoice setup mail` already exists.
+- **IMAP folder picker hint**: one-line nudge above the picker — `"Tip: your own Sent folder = see what you sent. INBOX of a shared mailbox (e.g., hello@creowis.com) = see invoices the team received."` Helps first-time users pick the right folder without needing to read PLAN.md.
+- **Dual-role pattern documented in README + CLAUDE.md** — `INVOICE_HOME=~/.invoice-account-head/ invoice <cmd>` for the account-head hat alongside the default `~/.invoice/` for sending. No code change.
+- **Migration**: zero — existing configs still parse; existing flows still work.
+
+### Step 1 — Schema: make `smtp` and `mail` optional
+
+**File**: `packages/shared/src/config-schema.ts`
+
+- Change top-level `smtp: z.object({...})` → `smtp: z.object({...}).optional()`.
+- Change top-level `mail: z.object({...})` → `mail: z.object({...}).optional()`.
+- Add a test in `packages/shared/src/config-schema.test.ts` covering "parses a receive-only config that has neither `smtp` nor `mail`."
+
+**Checkpoint**: `pnpm -F @invoice/shared test` green. A config with only identity + imap + currency parses cleanly.
+
+### Step 2 — Init: `Set up sending? (Y/n)` gate
+
+**File**: `packages/cli/src/commands/init.ts`
+
+- Before the SMTP block (currently around lines 118-126), add:
+  ```ts
+  const wantsSending = await confirm({
+    message: 'Set up sending (SMTP)? Skip if you only need to read invoices.',
+    default: true,
+  });
+  persist({ wantsSending });
+  ```
+- Wrap the SMTP block, recipients prompt, number-format prompt, and the mail optional-section in `if (wantsSending) { ... }`.
+- Add the IMAP folder-picker hint as a `console.log(...)` line right before the picker prompt (around line 145).
+- Persist `wantsSending` to the draft so a resume keeps the choice. Add it to the `InitDraft` interface.
+- Save the final config without the `smtp`/`mail`/recipients blocks when `wantsSending=false`. Add a one-line summary at the end: `"Configured as receive-only (sending disabled). Run \`invoice setup smtp\` later if you want to start sending."`
+
+**Checkpoint**: walk init twice on a fresh `INVOICE_HOME` — once saying Y (today's flow), once saying N (receive-only). N-flow exits with no SMTP keychain entry, no `config.smtp`, no `config.mail`, identity + IMAP only.
+
+### Step 3 — `invoice setup smtp` + `invoice setup recipients`
+
+**File**: `packages/cli/src/commands/setup.ts`
+
+- Register two new subcommands alongside the existing ones:
+  - `invoice setup smtp` — walks the existing `collectSmtp` flow from `init.ts` (already exported as a helper), saves to config + keychain.
+  - `invoice setup recipients` — walks the existing recipients prompt (extract from init.ts into an exported `setupRecipients(existing?)` helper).
+- Update `setup all` to also walk smtp + recipients when missing.
+
+**Checkpoint**: receive-only install → `invoice setup smtp` succeeds → `invoice send <id>` now works.
+
+### Step 4 — Runtime checks: friendly errors when SMTP isn't configured
+
+**File**: `packages/cli/src/commands/send.ts` (`performSend`)
+
+- At the top of `performSend`, before the `getPassword` call:
+  ```ts
+  if (!config.smtp) {
+    console.error('Sending isn't configured for this install. Run `invoice setup smtp` to enable sending.');
+    return 'error';
+  }
+  if (!config.mail || config.mail.recipients.to.length === 0) {
+    console.error('No recipients configured. Run `invoice setup recipients` to set them.');
+    return 'error';
+  }
+  ```
+- All other callers (`resend`, `clone --send`, `template use --send`, `recurring generate --send`) flow through `performSend`, so this single check covers everything.
+- `composeRecipients` (`packages/cli/src/recipients.ts`) — handle `config.mail` being undefined; if so, customer defaults + overrides are the only sources. Likely just a nullish-chain fix.
+
+**File**: `packages/cli/src/commands/config.ts` (`doctor`)
+
+- Update the doctor walk so it doesn't flag missing SMTP / missing mail as errors when this is a receive-only install — only flag missing IMAP, which is always required.
+
+**Checkpoint**: on a receive-only install, `invoice send <id>` prints the friendly error and exits 1, not a TypeError on `config.smtp.host`. `invoice list` / `mark` / `sync` work normally.
+
+### Step 5 — Documentation: dual-role recipe + receive-only walkthrough
+
+**Files**: `README.md` (if it exists; else `CLAUDE.md` and the project's docs entry point)
+
+- Add a "Setup recipes" section with three scripts:
+  - **Sender** (default): `invoice init` → answer Y to "Set up sending?" → pick your provider's Sent folder.
+  - **Account head / inbox manager**: `invoice init` → answer N to "Set up sending?" → pick INBOX of the shared mailbox. `invoice sync` populates the local DB; `invoice list`, `invoice mark <id> paid`, `invoice search`, `invoice last` all work.
+  - **Dual role** (one person, both hats): keep `~/.invoice/` for the sender hat. For the account-head hat, run `INVOICE_HOME=~/.invoice-account-head/ invoice init` and pick the receive-only branch + the shared INBOX. Toggle hats by prefixing commands: `INVOICE_HOME=~/.invoice-account-head/ invoice list`.
+
+### Step 6 — Verification + housekeeping
+
+**Run**: `pnpm build && pnpm test && pnpm lint` clean. Expect ~240 tests (+3 from Step 1 schema test + a couple for `setup` smoke and the runtime-check error path).
+
+**Manual smoke (Phase 4.9 verification section in `TESTING.md`)**:
+
+- Fresh `INVOICE_HOME`. `invoice init`. Answer N to "Set up sending?". Init finishes with only 3 substantive prompts (identity + IMAP creds + folder picker). `~/.invoice/config.json` has no `smtp`/`mail`/`mail.recipients` keys. Keychain has no `smtp-app-password` entry.
+- `invoice list` works (empty). `invoice sync` works (pulls from INBOX). `invoice mark <id> paid` works.
+- `invoice send <id>` prints `"Sending isn't configured…"` and exits 1.
+- `invoice setup smtp` → answer the prompts → `invoice setup recipients` → `invoice send <id>` now works.
+- IMAP folder-picker hint is visible at the right moment in `invoice init`.
+
+**Update**:
+
+- `CLAUDE.md` — bump phase status to "Phase 4.9 complete"; record deviations (smtp + mail optional in schema; capability-not-role check pattern; the `wantsSending` init draft field; the `INVOICE_HOME` dual-role doc).
+- `TESTING.md` — new "Phase 4.9 verification" section per above.
+
+### Critical files to modify
+
+- `packages/shared/src/config-schema.ts` (smtp + mail optional)
+- `packages/shared/src/config-schema.test.ts` (receive-only parse test)
+- `packages/cli/src/commands/init.ts` (wantsSending gate + folder hint + new `InitDraft.wantsSending` field; extract `setupRecipients` helper)
+- `packages/cli/src/commands/setup.ts` (register `setup smtp` + `setup recipients`)
+- `packages/cli/src/commands/send.ts` (`performSend` SMTP/mail capability check)
+- `packages/cli/src/recipients.ts` (handle absent `config.mail`)
+- `packages/cli/src/commands/config.ts` (`doctor` tolerates absent smtp/mail)
+- `README.md` (or equivalent) + `CLAUDE.md` (Setup recipes section)
+- `TESTING.md` (P4.9 verification block)
+
+### Out of scope (deliberately)
+
+- A new `config.role` field. CLAUDE.md says "no role separation in the codebase"; capability is implicit via `config.smtp` presence. Don't reintroduce roles via a back door.
+- `invoice setup imap` — changing the IMAP folder mid-flight changes the scope of what's in `local.db`, which is a security property per CLAUDE.md. Users who need a different folder should run a separate `INVOICE_HOME`.
+- Multi-folder support on one install. Weakens the "folder = scope = audit boundary" invariant. The dual-role use case is solved by the documented `INVOICE_HOME` pattern.
+- Hard-blocking the user from `invoice new` / `invoice clone` / `invoice template use` when SMTP is absent. Drafts still work; only `--send` chains and `invoice send` itself need the capability check.
+- A `--receive-only` CLI flag on `invoice init`. The inline prompt covers it; a flag duplicates the choice without adding value.
+
 ## Out of scope (explicit non-goals)
 
 - Any hosted/cloud component beyond the mail provider itself.

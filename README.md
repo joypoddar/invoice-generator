@@ -46,6 +46,65 @@ invoice sync          # pull your sent invoice back into local.db
 invoice list          # show local DB
 ```
 
+## Setup recipes
+
+Three common shapes for `invoice init`. They all share the same binary — what differs is whether SMTP is set up and which IMAP folder you point at.
+
+### 1. Sender (default)
+
+You bill customers, send invoices, and want them indexed locally.
+
+```bash
+invoice init
+#   Set up sending (SMTP)? → Y
+#   Number format / SMTP creds / IMAP creds
+#   Folder picker → pick your provider's Sent folder (e.g. "[Gmail]/Sent Mail")
+```
+
+What you get: `invoice new` / `send` / `sync` / `list` / `mark paid` / `clone` / `template` / `recurring`. After each `invoice send`, your own Sent folder is the source of truth — re-syncing rebuilds `local.db` from it.
+
+### 2. Account head / inbox manager (receive-only)
+
+You process invoices that _others_ send. You never send anything yourself.
+
+```bash
+invoice init
+#   Set up sending (SMTP)? → N
+#   IMAP creds (for the shared mailbox, e.g. hello@creowis.com)
+#   Folder picker → pick INBOX
+```
+
+What you get: `invoice sync` (pulls invoices the team received), `invoice list` / `ls` / `search` / `last`, `invoice mark <id> paid|unpaid`, `invoice config doctor`, `invoice whoami`. SMTP-dependent commands (`send`, `resend`, `clone --send`, etc.) print a friendly _"Sending isn't configured. Run `invoice setup smtp` to enable sending."_ and exit.
+
+Promote to a sender later without re-initing:
+
+```bash
+invoice setup smtp        # adds host/port/user + keychain password
+invoice setup recipients  # adds default 'to' list
+invoice setup mail        # optional: subject/body/reply-to templates
+```
+
+### 3. Dual role (one person, both hats)
+
+If you sometimes send your own invoices AND sometimes process the shared inbox, run two installs side-by-side using `INVOICE_HOME`:
+
+```bash
+# Sender hat — default ~/.invoice/
+invoice init                           # answer Y, folder = your Sent
+invoice send <id>
+
+# Account-head hat — a second config dir
+export INVOICE_HOME=~/.invoice-account-head/
+invoice init                           # answer N, folder = shared INBOX
+invoice sync && invoice list
+
+# Toggle hats by prefixing the command:
+INVOICE_HOME=~/.invoice-account-head/ invoice list
+INVOICE_HOME=~/.invoice-account-head/ invoice mark <id> paid
+```
+
+Each config dir gets its own `local.db`, keychain entries (different `imap-app-password` per `INVOICE_HOME`), and folder scope. The audit boundary stays clean: `~/.invoice/` only knows about your Sent, `~/.invoice-account-head/` only knows about the shared INBOX.
+
 ## Status
 
 **Phase 1 (CLI MVP) — in development.** See [`PLAN.md`](./PLAN.md) for the full design and roadmap (9 phases, including a future local-LLM chat phase).
