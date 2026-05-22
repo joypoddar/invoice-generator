@@ -12,6 +12,7 @@ import {
 } from '../secrets.js';
 import { clearDraft, draftExists, loadDraft, saveDraft } from '../drafts.js';
 import { slugFor, type CustomerData } from '../customers.js';
+import { validateEmail, validateEmailList, validateIfsc } from '../validators.js';
 
 interface InitDraft {
   name?: string;
@@ -96,6 +97,7 @@ async function runInit(): Promise<void> {
     message: 'Your email:',
     default: draft.email ?? existing?.email,
     required: true,
+    validate: validateEmail(false),
   });
   const currency = await input({
     message: 'Default currency (3-letter ISO code):',
@@ -200,6 +202,7 @@ async function runInit(): Promise<void> {
         draft.recipientsTo?.join(', ') ??
         existing?.mail?.recipients.to.join(', ') ??
         'hello@creowis.com',
+      validate: validateEmailList(false),
     });
     toList = toCsv
       .split(',')
@@ -540,7 +543,12 @@ export async function setupBank(existing: Config['bank'] = {}): Promise<Config['
     message: 'Account number:',
     default: existing.accountNumber ?? '',
   });
-  const ifsc = await input({ message: 'IFSC code:', default: existing.ifsc ?? '' });
+  const ifscRaw = await input({
+    message: 'IFSC code:',
+    default: existing.ifsc ?? '',
+    validate: validateIfsc(true),
+  });
+  const ifsc = ifscRaw.toUpperCase();
   const accountType = await input({
     message: 'Account type (e.g. Savings / Current):',
     default: existing.accountType ?? '',
@@ -600,6 +608,7 @@ export async function setupMail(
   const replyTo = await input({
     message: 'Reply-to email (optional):',
     default: existing.replyTo ?? '',
+    validate: validateEmail(true),
   });
   const bodyTemplate = await readMultiline('Body template (optional)', existing.bodyTemplate);
   return {
@@ -643,13 +652,18 @@ export async function setupCustomer(prefill?: Partial<CustomerData>): Promise<Cu
     default: prefill?.name ?? '',
     required: true,
   });
-  const email = await input({ message: 'Email (optional):', default: prefill?.email ?? '' });
+  const email = await input({
+    message: 'Email (optional):',
+    default: prefill?.email ?? '',
+    validate: validateEmail(true),
+  });
   const address = await readMultiline('Address (optional)', prefill?.address);
   const phone = await input({ message: 'Phone (optional):', default: prefill?.phone ?? '' });
 
   const toCsv = await input({
     message: "Default 'to' recipients (comma-separated emails):",
     default: prefill?.defaultRecipientTo?.join(', ') ?? '',
+    validate: validateEmailList(true),
   });
   const defaultRecipientTo = toCsv
     .split(',')
@@ -659,6 +673,7 @@ export async function setupCustomer(prefill?: Partial<CustomerData>): Promise<Cu
   const ccCsv = await input({
     message: "Default 'cc' recipients (comma-separated emails, optional):",
     default: prefill?.defaultRecipientCc?.join(', ') ?? '',
+    validate: validateEmailList(true),
   });
   const defaultRecipientCc = ccCsv
     .split(',')
@@ -715,6 +730,7 @@ export async function setupRecipients(existing?: string[]): Promise<string[]> {
   const toCsv = await input({
     message: "Default 'to' (comma-separated email addresses):",
     default: existing?.join(', ') ?? 'hello@creowis.com',
+    validate: validateEmailList(false),
   });
   return toCsv
     .split(',')
