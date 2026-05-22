@@ -271,6 +271,16 @@ describe('renderInvoiceHtml', () => {
       expect(html).toMatch(/@page\s*\{[^}]*size:\s*A4/);
     });
 
+    it('sets @page margin to 0 so browser headers/footers (URL + timestamp) get no room to render', () => {
+      const html = renderInvoiceHtml(makeInvoice());
+      expect(html).toMatch(/@page\s*\{[^}]*margin:\s*0/);
+    });
+
+    it('compensates by setting print-time padding 1.5cm on .invoice-card', () => {
+      const html = renderInvoiceHtml(makeInvoice());
+      expect(html).toMatch(/\.invoice-card\s*\{[^}]*padding:\s*1\.5cm\s*!important/);
+    });
+
     it('includes an @media print block', () => {
       const html = renderInvoiceHtml(makeInvoice());
       expect(html).toMatch(/@media\s+print\s*\{/);

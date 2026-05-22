@@ -183,12 +183,16 @@ export function renderInvoiceHtml(invoice: Invoice, opts: RenderOpts = {}): stri
   <title>${escapeHtml(buildTitle(fromName, String(def.invoiceNumber)))}</title>
   <style>
     /* Print rules. Inline styles above keep the email rendering intact in
-       clients that strip <style>; these only kick in for window.print(). */
-    @page { size: A4; margin: 1.5cm; }
+       clients that strip <style>; these only kick in for window.print().
+       @page margin is 0 (not 1.5cm) so the browser has nowhere to draw its
+       default header (URL + page title) / footer (timestamp). The 1.5cm we
+       removed is added back inside .invoice-card as padding so the printed
+       content has the same visual breathing room. */
+    @page { size: A4; margin: 0; }
     @media print {
       html, body { background: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; color-adjust: exact; }
-      body { padding: 0 !important; }
-      .invoice-card { box-shadow: none !important; border-radius: 0 !important; padding: 0 !important; max-width: 100% !important; margin: 0 !important; }
+      body { margin: 0 !important; padding: 0 !important; }
+      .invoice-card { box-shadow: none !important; border-radius: 0 !important; padding: 1.5cm !important; max-width: 100% !important; margin: 0 !important; }
       table, tr, td, th { page-break-inside: avoid; }
       h1, h2, h3 { page-break-after: avoid; }
       .no-print { display: none !important; }
