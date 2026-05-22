@@ -47,7 +47,7 @@ invoice-generator/
 
 ## Phase status
 
-The plan lays out 9 phases plus mid-phase polishes. **Phases 1, 4, 4.5, 4.6, 4.7, 4.8, and 4.9 are complete** — the `invoice` binary ships:
+The plan lays out 9 phases plus mid-phase polishes. **Phases 1, 4, 4.5, 4.6, 4.7, 4.8, 4.9, and 4.10 are complete** — the `invoice` binary ships:
 
 - **Phase 1 (CLI MVP)** — `init / config / whoami / new / list / send / sync / mark`.
 - **Phase 4 (Customer-facing invoice + recurring billing)** — branding-driven HTML rendering, `Intl`-based date/currency formatting, print CSS, customizable subject line, `invoice clone`, `invoice template (save/list/use/delete)`, `invoice recurring (create/list/show/delete/generate/schedule-help)`.
@@ -57,7 +57,9 @@ The plan lays out 9 phases plus mid-phase polishes. **Phases 1, 4, 4.5, 4.6, 4.7
 - **Phase 4.8 (per-customer invoice numbering + drop redundant re-prompts)** — saved customers carry optional `numberFormat` + their own `nextSeq` counter; when a customer is picked at `invoice new` (or detected via `customerSlug` on a clone/template/recurring source), that format/counter wins. `{COMPANY3}` inside a customer's format resolves to the customer's name initials. Picking a saved customer (or resuming a draft past the customer step) **skips** the name/email/address prompts entirely — they no longer re-prompt with the "Press Enter on Line 1 to keep" hint that caused users to accidentally overwrite saved addresses.
 - **Phase 4.9 (receive-only install)** — `invoice init` opens with `Set up sending (SMTP)? (Y/n)`. Saying `N` skips the SMTP block, default-recipients prompt, number-format prompt, and the mail subject/body/reply-to optional section. `smtp` and `mail` are now `.optional()` in the Zod schema. Send-side commands (`send`, `resend`, `clone --send`, `template use --send`, `recurring generate --send`) check `config.smtp` at runtime and print a friendly `"Sending isn't configured. Run \`invoice setup smtp\` to enable sending."`instead of a TypeError. New`invoice setup smtp`+`invoice setup recipients` subcommands let a receive-only install promote to sender later. IMAP folder picker gained a one-line hint explaining Sent vs INBOX. The README has a new "Setup recipes" section covering sender / account-head / dual-role-via-INVOICE_HOME.
 
-**238 unit tests** pass across `shared`, `core`, and `cli`. Manual end-to-end verification (`TESTING.md` § "Phase 4 verification" + "Phase 4.6 verification" + "Phase 4.7 verification" + "Phase 4.8 verification" + "Phase 4.9 verification") is the remaining item before Phase 5 starts in earnest.
+- **Phase 4.10 (Billed-To phone + IFSC caps + picker default + validation)** — Billed To block now mirrors Billed By order (name → address → email → phone) and renders `customerPhone` (new field in `DEFAULT_FIELDS`, snapshotted from the saved customer or collected in the manual-entry path). IFSC is uppercased at three sites: `setupBank` input, `snapshotDefaults` in `new.ts`, and defensively at render time in `email.ts`. `invoice new` picker now defaults to the first saved customer (alphabetical) instead of `+ New customer`. New `packages/cli/src/validators.ts` exports `validateEmail/validateEmailList/validateIfsc` and wires them into six prompts in `init.ts` — invalid emails/IFSC now fail at the prompt with a clear message instead of at Zod-parse. `invoice resend <id>` (Phase 4.7) was verified intact, no code change.
+
+**252 unit tests** pass across `shared`, `core`, and `cli`. Manual end-to-end verification (`TESTING.md` § "Phase 4 verification" + "Phase 4.6 verification" + "Phase 4.7 verification" + "Phase 4.8 verification" + "Phase 4.9 verification" + "Phase 4.10 verification") is the remaining item before Phase 5 starts in earnest.
 
 **Active phase: Phase 5 (Hono dashboard MVP)** — local server bound to `127.0.0.1`, server-rendered JSX, vanilla-JS sync/paid-toggle, no Next.js, no bundler. See PLAN.md § "Execution phases" → Phase 5 for the precise scope. **Phase 2 (CLI productivity — filter flags, CSV export, preview)** is still open and can land in parallel.
 
@@ -143,6 +145,17 @@ The plan lays out 9 phases plus mid-phase polishes. **Phases 1, 4, 4.5, 4.6, 4.7
 - **`invoice config doctor`** treats absent `smtp` as a legitimate state (`"SMTP: not configured (receive-only install)"`) rather than a failure. Only flags missing `imap-app-password` as a hard error.
 - **IMAP folder picker hint** prints one line above the `select` prompt: `"Tip: your own Sent folder = see invoices you sent. INBOX of a shared mailbox (e.g., hello@creowis.com) = see invoices the team received."` Helps first-time users pick without needing to read PLAN.md.
 - **Dual-role pattern lives in README "Setup recipes"** — two `INVOICE_HOME` dirs, one per hat. No code change supports it; it already worked. Documented because it wasn't obvious.
+
+### Phase-4.10 deviations
+
+- **`customerPhone` added to `DEFAULT_FIELDS`** in `packages/shared/src/invoice.ts`. `applyPickedCustomer` in `new.ts` copies the customer's `phone` into the draft only when present; `snapshotDefaults` carries it onto the invoice. The renderer's Billed To block reads it via `pickField(invoice, 'customerPhone')` and renders the same `<strong>Phone:</strong>` label format as Billed By.
+- **Billed To order changed to match Billed By**: was `name → email → address`, now `name → address → email → phone`. Visual hierarchy now mirrors the Billed By column above it.
+- **`invoice new` manual-entry path gained a `Customer phone (optional):` prompt** after the address prompt. Picked customers still skip it (data already in draft); manual-entry customers get the chance to add a phone that'll appear in Billed To.
+- **IFSC normalization happens at three sites**, not just one: (a) `setupBank` in init.ts uppercases the user's input before persisting; (b) `snapshotDefaults` in new.ts uppercases `c.bank.ifsc` when writing to `invoice.default.bankIfsc` (defends against pre-4.10 configs that have lowercase); (c) `email.ts` defensively `.toUpperCase()`s `bankIfsc` at render time so old invoices/configs with lowercase still render correctly.
+- **Picker default = first saved customer** (`saved[0]?.[0]`), not the `+ New customer` sentinel. The picker already sorts customers alphabetically via `listCustomers`, so this is deterministic. Common path (billing an existing customer) is one Enter; brand-new customer takes an arrow-down.
+- **Shared `validators.ts`** exports three `validate:` factory functions for `@inquirer/prompts.input(...)`. Each returns `true` on success or an error string. `allowEmpty: boolean` parameterizes the required-vs-optional case so the same validator works for both `Your email:` (required) and `Email (optional):` (allowed empty). Used in 6 prompts across `init.ts`.
+- **IFSC validator is non-strict on the second pass**: pattern `[A-Z]{4}0[A-Z0-9]{6}`. The prompt currently re-loops until valid (matching the existing `validate:` behavior in inquirer). Edge case: a user with a non-Indian bank account can leave IFSC blank (`allowEmpty=true`); the field stays optional in the schema.
+- **No auto-migration of existing lowercase IFSCs at config-load time** — the defensive render-time uppercase covers display. The persisted value gets fixed the next time the user runs `invoice setup bank`. This avoids surprising users with silent config rewrites.
 
 When you complete a phase, update this section so the next session knows where things stand.
 

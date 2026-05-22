@@ -1629,6 +1629,131 @@ The dual-role case (one person who sometimes sends and sometimes acts as account
 - Hard-blocking the user from `invoice new` / `invoice clone` / `invoice template use` when SMTP is absent. Drafts still work; only `--send` chains and `invoice send` itself need the capability check.
 - A `--receive-only` CLI flag on `invoice init`. The inline prompt covers it; a flag duplicates the choice without adding value.
 
+## Phase 4.10 — Billed-To phone, IFSC caps, picker default, validation audit
+
+### Context
+
+Five user-reported gaps after Phase 4.9 shipped, bundled because each is small and they touch overlapping files:
+
+1. **Billed To is missing customer phone.** Billed By renders `name → address → email → phone`; Billed To renders only `name → email → address`. Customer schema already collects `phone` (Phase 4.7) but it's never snapshotted onto the invoice or rendered. The user wants Billed To to mirror Billed By when those contact fields exist.
+2. **IFSC code isn't normalized to uppercase.** Indian bank routing codes are always uppercase by convention (`HDFC0001234`), but the bank-setup prompt accepts whatever the user types and persists it as-is. Old configs with lowercase ifsc render the lowercase. Three sites need a `.toUpperCase()`: the prompt, the snapshot, the renderer.
+3. **`invoice new` picker defaults to "+ New customer".** Most invoices go to existing customers; defaulting to "new" makes the dominant path require a keystroke. Picker should default to the first saved customer (alphabetical) instead.
+4. **`invoice resend` was reported as needing verification.** Already shipped in Phase 4.7 (`packages/cli/src/commands/resend.ts`) — guards on `status === 'sent'`, prints a `⚠ This invoice was already sent…` warning, then runs the standard `performSend` pipeline. No code change required; just confirm and add a verification checkbox.
+5. **Input-time validation is missing on email/IFSC prompts.** Six `await input(...)` calls collect email addresses with no `validate:` function — invalid emails are caught later at Zod-parse time with a vague error. IFSC and URLs are also accepted raw.
+
+### Decisions confirmed
+
+- **Just add `customerPhone`** — don't extend customer schema with website/taxId yet (Billed By doesn't render those either; deferred).
+- **Phone is added to the manual-entry path of `invoice new`** so newly-typed customers also get phone in their Billed To block, not just picked-from-directory ones.
+- **IFSC normalization happens at input time** (uppercase in `setupBank` before persist) **and defensively at render time** (so existing lowercase configs render correctly without a re-init).
+- **Picker default** = first saved customer's slug (already sorted alphabetically by `listCustomers`). "+ New customer" stays at the bottom of the list as a non-default option.
+- **Resend**: verify-only. Add a verification checkbox to TESTING.md confirming current behavior.
+- **Validation additions are surgical**, not blanket: add `validate:` to email-collecting prompts (using a shared `validateEmail` / `validateEmailList` helper). IFSC gets format + uppercase normalization. URLs left as-is (too varied, low ROI).
+
+### Step 1 — Billed To: snapshot customer phone + reorder Billed To to match Billed By
+
+**Files**:
+
+- `packages/shared/src/invoice.ts` — add `'customerPhone'` to `DEFAULT_FIELDS`.
+- `packages/cli/src/commands/new.ts`:
+  - `applyPickedCustomer`: when the picked customer has `c.phone`, persist `customerPhone: c.phone` to the draft.
+  - Manual-entry path (when no customer is picked or `+ New customer` is chosen): add a single-line `Customer phone (optional):` prompt after the address prompt.
+  - Add `customerPhone?: string` to `NewDraft`; thread through `snapshotDefaults`.
+- `packages/cli/src/email.ts` — Billed To block:
+  - Reorder fields to match Billed By: `name → address → email → phone`.
+  - Read `default.customerPhone` (fall back to `custom.customerPhone` if present, mirroring the legacy fallback the renderer already uses for other fields).
+
+**Checkpoint**: pick a saved customer with phone → `invoice new` produces a draft → rendered HTML shows phone in Billed To. Same for a manually-entered customer who answers the phone prompt. A picked customer without phone shows no empty line.
+
+### Step 2 — IFSC always uppercase
+
+**Files**:
+
+- `packages/cli/src/commands/init.ts` — in `setupBank`, uppercase the ifsc value before returning. Optional: also `validate:` to nudge the user toward the 11-char `[A-Z]{4}0[A-Z0-9]{6}` pattern (warning only — accept on second confirm so non-Indian users aren't blocked).
+- `packages/cli/src/commands/new.ts` — `snapshotDefaults` uppercases `c.bank.ifsc` when writing to `invoice.default.bankIfsc`.
+- `packages/cli/src/email.ts` — at render time, defensively `.toUpperCase()` the bank IFSC field so existing lowercase configs render correctly without forcing a re-init.
+
+**Checkpoint**: `invoice setup bank` typing `hdfc0001234` → `invoice config get bank.ifsc` returns `HDFC0001234`. Re-rendering an old invoice with `bankIfsc: 'hdfc0001234'` in its snapshot displays `HDFC0001234`.
+
+### Step 3 — Picker default to first saved customer
+
+**File**: `packages/cli/src/commands/new.ts` — change the `select({ ... default: NEW_SENTINEL })` call so the default is the first saved customer's slug (i.e., `saved[0]?.[0]`). When no customers exist, the picker isn't shown at all, so this only affects the saved-customers-present branch. "+ New customer" stays as the last option in the choices array.
+
+**Checkpoint**: in a config with saved customers Acme + Beta + Globex (sorted alphabetically), `invoice new` opens the picker with **Acme** pre-highlighted. Press Enter → picks Acme. Arrow-down to "+ New customer" → manual entry as today.
+
+### Step 4 — Resend verification (no code change)
+
+Confirm `packages/cli/src/commands/resend.ts` (Phase 4.7) ships the expected behavior:
+
+- Resolver looks up the ref (full UUID / short id / invoice number).
+- Refuses to act on drafts (`"Invoice has never been sent. Use \`invoice send\`…"`).
+- Prints `⚠ This invoice was already sent at <when> to <whom>.`
+- Hands a `{...invoice, status: 'draft'}` clone to `performSend` so the already-sent guard doesn't bail.
+- The upsert overwrites the row with the new `sentAt` + recipients snapshot.
+
+Add the verification step to TESTING.md (it's already covered under P4.7.8; this just cross-links it from P4.10).
+
+### Step 5 — Prompt-level input validation
+
+**New file**: `packages/cli/src/validators.ts` exporting reusable `validate:` functions for `@inquirer/prompts`:
+
+```ts
+export function validateEmail(allowEmpty: boolean = false): (v: string) => boolean | string;
+export function validateEmailList(allowEmpty: boolean = false): (v: string) => boolean | string; // CSV
+export function validateIfsc(): (v: string) => boolean | string; // [A-Z]{4}0[A-Z0-9]{6} (warning, not block)
+```
+
+Implementation: `validateEmail` checks against the same regex Zod uses (the standard one: `/^[^\s@]+@[^\s@]+\.[^\s@]+$/`). Empty string returns `true` if `allowEmpty`, else `'Email is required'`. `validateEmailList` splits on comma, validates each non-empty entry. `validateIfsc` checks the 11-char pattern; on miss, returns `'IFSC should be 11 chars: 4 letters + 0 + 6 alphanumeric (e.g., HDFC0001234)'` — non-blocking is fine to start, since some users might have edge-case IFSCs.
+
+**Wire-up sites** (all in `packages/cli/src/commands/init.ts`):
+
+- Top-level identity `Your email:` prompt → `validate: validateEmail(false)`.
+- `setupCustomer` `Email (optional):` → `validate: validateEmail(true)`.
+- `setupCustomer` `Default 'to'` + `'cc'` recipients (CSV) → `validate: validateEmailList(true)`.
+- `setupMail` `Reply-to email (optional):` → `validate: validateEmail(true)`.
+- `setupRecipients` `Default 'to'` CSV (Phase 4.9) → `validate: validateEmailList(false)`.
+- `setupBank` IFSC → `validate: validateIfsc()`, plus the Step 2 uppercase.
+
+**Tests** (`packages/cli/src/validators.test.ts`): one test per validator covering pass / fail / allow-empty / CSV-with-some-invalid cases. ~8 tests.
+
+**Checkpoint**: `invoice customer save` with `email: not-an-email` errors at the prompt (with a clear message), not at the final Zod parse. Same for replyTo, recipients, IFSC.
+
+### Step 6 — Verification + housekeeping
+
+**Run**: `pnpm build && pnpm test && pnpm lint` clean. Expect ~246 tests (+8 from validators + maybe a couple of small additions).
+
+**Manual smoke** — new "Phase 4.10 verification" section in `TESTING.md`:
+
+- P4.10.1 — Billed To rendering: pick a saved customer with phone → rendered email shows phone in Billed To at the end. Manual-entry path prompts for phone; entered value appears in Billed To. Customer with no phone → no empty line.
+- P4.10.2 — IFSC caps: `invoice setup bank` typing `hdfc0001234` → config has `HDFC0001234`. Old invoice with lowercase IFSC in its sidecar renders uppercase. Out-of-format IFSC (e.g., `1234`) triggers the warning but accepts on second confirm.
+- P4.10.3 — Picker default: `invoice new` opens with the first saved customer highlighted; Enter picks it; arrow-down then Enter picks "+ New customer".
+- P4.10.4 — Resend (verify only): `invoice resend <sent-id>` works; `invoice resend <draft-id>` errors with `"Invoice has never been sent. Use \`invoice send\`…"`.
+- P4.10.5 — Validation: `invoice customer save` with `email: not-an-email` is rejected at the prompt. Same for replyTo, recipients CSV, IFSC.
+
+**Update**:
+
+- `CLAUDE.md` — bump phase status to include 4.10 + a small "Phase-4.10 deviations" block (customer phone snapshot field, IFSC normalize-on-input-and-defensive-on-render, picker default to first saved slug, shared validators module).
+- `TESTING.md` — new P4.10 verification block per above.
+- `PLAN.md` — sync from this canonical plan file.
+
+### Critical files to modify
+
+- `packages/shared/src/invoice.ts` (add `customerPhone` to DEFAULT_FIELDS)
+- `packages/cli/src/commands/new.ts` (snapshot phone, manual-entry phone prompt, picker default change, IFSC uppercase in snapshot)
+- `packages/cli/src/commands/init.ts` (IFSC uppercase in `setupBank`; validation `validate:` callbacks on email/IFSC prompts)
+- `packages/cli/src/email.ts` (Billed To phone, Billed To reorder, defensive IFSC uppercase)
+- `packages/cli/src/validators.ts` (NEW — shared `validate:` functions)
+- `packages/cli/src/validators.test.ts` (NEW)
+- `TESTING.md`, `CLAUDE.md`, `PLAN.md` (housekeeping)
+
+### Out of scope (deliberately)
+
+- Extending the customer schema with `website` + `taxId`. The user confirmed only `customerPhone` for now; Billed By doesn't render those either today.
+- Extending the company-side Billed By renderer to show website/taxId. Separate concern.
+- Strict phone-number validation. Phone formats are too varied (international, extensions, spaces) for a single regex to catch real-world errors without false positives.
+- URL validation on `branding.logoUrl` / `signatureUrl`. Low ROI; the renderer already handles missing files silently.
+- Auto-migrating old configs to uppercase IFSC at load time. The defensive `.toUpperCase()` at render time covers display; `invoice setup bank` fixes the persisted value when the user next touches it.
+
 ## Out of scope (explicit non-goals)
 
 - Any hosted/cloud component beyond the mail provider itself.
