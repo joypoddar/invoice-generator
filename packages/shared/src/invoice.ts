@@ -12,6 +12,7 @@ export const DEFAULT_FIELDS = [
   'customerName',
   'customerEmail',
   'customerAddress',
+  'customerPhone',
   'customerSlug',
   'lineItems',
   'lineItemHeader',

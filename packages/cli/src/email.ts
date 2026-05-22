@@ -156,9 +156,13 @@ export function renderInvoiceHtml(invoice: Invoice, opts: RenderOpts = {}): stri
   const customerName = pickField(invoice, 'customerName');
   const customerEmail = pickField(invoice, 'customerEmail');
   const customerAddress = pickField(invoice, 'customerAddress');
+  const customerPhone = pickField(invoice, 'customerPhone');
   const bankAccountName = pickField(invoice, 'bankAccountName');
   const bankAccountNumber = pickField(invoice, 'bankAccountNumber');
-  const bankIfsc = pickField(invoice, 'bankIfsc');
+  // Defensive uppercase: pre-4.10 configs may have lowercase IFSC; the convention
+  // is uppercase (e.g., HDFC0001234) and customers expect to see it that way.
+  const bankIfscRaw = pickField(invoice, 'bankIfsc');
+  const bankIfsc = bankIfscRaw ? bankIfscRaw.toUpperCase() : bankIfscRaw;
   const bankAccountType = pickField(invoice, 'bankAccountType');
   const bankName = pickField(invoice, 'bankName');
   const paymentInstructions = pickField(invoice, 'paymentInstructions');
@@ -322,20 +326,27 @@ export function renderInvoiceHtml(invoice: Invoice, opts: RenderOpts = {}): stri
         <td style="width:48%; vertical-align:top; background:#eef0fb; border-radius:8px;
                    padding:18px 20px;">
           <p style="margin:0 0 10px; font-size:14px; font-weight:700; color:${primary};">Billed To</p>
-          <p style="margin:0 0 6px; font-size:14px; font-weight:700; color:#222;">
+          <p style="margin:0 0 ${customerAddress ? '6px' : '12px'}; font-size:14px; font-weight:700; color:#222;">
             ${escapeHtml(customerName)}
           </p>
           ${
-            customerEmail
-              ? `<p style="margin:0 0 4px; font-size:13px; color:#444;">
-            ${escapeHtml(customerEmail)}
+            customerAddress
+              ? `<p style="margin:0 0 8px; font-size:13px; color:#444; line-height:1.6;">
+            ${escapeHtml(customerAddress).replace(/\n/g, '<br/>')}
           </p>`
               : ''
           }
           ${
-            customerAddress
-              ? `<p style="margin:0; font-size:13px; color:#444; line-height:1.6;">
-            ${escapeHtml(customerAddress).replace(/\n/g, '<br/>')}
+            customerEmail
+              ? `<p style="margin:0 0 4px; font-size:13px; color:#444;">
+            <strong>Email:</strong> ${escapeHtml(customerEmail)}
+          </p>`
+              : ''
+          }
+          ${
+            customerPhone
+              ? `<p style="margin:0; font-size:13px; color:#444;">
+            <strong>Phone:</strong> ${escapeHtml(customerPhone)}
           </p>`
               : ''
           }

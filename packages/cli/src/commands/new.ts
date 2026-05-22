@@ -23,6 +23,7 @@ interface NewDraft {
   customerName?: string;
   customerEmail?: string;
   customerAddress?: string;
+  customerPhone?: string;
   customerSlug?: string;
   currency?: string;
   lineItems?: LineItem[];
@@ -103,7 +104,10 @@ async function runNew(opts: NewOptions): Promise<void> {
           ...saved.map(([slug, c]) => ({ name: c.name, value: slug })),
           { name: '+ New customer', value: NEW_SENTINEL },
         ],
-        default: NEW_SENTINEL,
+        // Default to the first saved customer (alphabetical) so the common
+        // path — billing an existing customer — is one Enter, and creating a
+        // brand-new customer requires an explicit arrow-down.
+        default: saved[0]?.[0],
       });
       if (choice !== NEW_SENTINEL) {
         const picked = getCustomer(config, choice);
@@ -130,6 +134,10 @@ async function runNew(opts: NewOptions): Promise<void> {
   const customerAddress =
     draft.customerAddress ?? (await readMultiline('Customer address (optional)', undefined));
   if (draft.customerAddress === undefined) persist({ customerAddress });
+  const customerPhone: string | undefined =
+    draft.customerPhone ??
+    ((await input({ message: 'Customer phone (optional):', default: '' })) || undefined);
+  if (draft.customerPhone === undefined) persist({ customerPhone });
 
   // Now that customerSlug is locked in, resolve the right format/seq.
   const numberSpec = resolveNumberSpec(config, customerSlug);
@@ -206,6 +214,7 @@ async function runNew(opts: NewOptions): Promise<void> {
       customerName,
       customerEmail,
       customerAddress,
+      customerPhone,
       customerSlug,
       currency,
       lineItems,
@@ -258,6 +267,7 @@ interface SnapshotInputs {
   customerName: string;
   customerEmail: string;
   customerAddress: string | undefined;
+  customerPhone: string | undefined;
   customerSlug: string | undefined;
   currency: string;
   lineItems: LineItem[];
@@ -283,6 +293,7 @@ function snapshotDefaults(i: SnapshotInputs): Record<string, unknown> {
     customerName: i.customerName,
     customerEmail: i.customerEmail,
     customerAddress: i.customerAddress,
+    customerPhone: i.customerPhone,
     customerSlug: i.customerSlug,
     lineItems: i.lineItems,
     lineItemHeader: c.invoice.lineItemHeader,
@@ -292,7 +303,7 @@ function snapshotDefaults(i: SnapshotInputs): Record<string, unknown> {
     taxAmount: i.taxAmount,
     bankAccountName: c.bank.accountName,
     bankAccountNumber: c.bank.accountNumber,
-    bankIfsc: c.bank.ifsc,
+    bankIfsc: c.bank.ifsc?.toUpperCase(),
     bankAccountType: c.bank.accountType,
     bankName: c.bank.bankName,
     paymentInstructions: c.invoice.paymentInstructions,
@@ -334,6 +345,7 @@ function applyPickedCustomer(
   const patch: Partial<NewDraft> = { customerSlug: slug, customerName: c.name };
   if (c.email) patch.customerEmail = c.email;
   if (c.address) patch.customerAddress = c.address;
+  if (c.phone) patch.customerPhone = c.phone;
   persist(patch);
   console.log(`  Using saved customer: ${c.name}`);
 }
