@@ -3,6 +3,7 @@ import { extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hasCustomFields, type Invoice, type LineItem } from '@invoice/shared';
 import { formatCurrency, formatCurrencyMaybeInt, formatDate } from './format.js';
+import { slugify } from './slugify.js';
 
 export interface BrandingOpts {
   primaryColor?: string;
@@ -179,7 +180,7 @@ export function renderInvoiceHtml(invoice: Invoice, opts: RenderOpts = {}): stri
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Invoice ${escapeHtml(String(def.invoiceNumber))}</title>
+  <title>${escapeHtml(buildTitle(fromName, String(def.invoiceNumber)))}</title>
   <style>
     /* Print rules. Inline styles above keep the email rendering intact in
        clients that strip <style>; these only kick in for window.print(). */
@@ -432,6 +433,19 @@ function renderTotalBlock(args: {
       </td>
     </tr>
   </table>`;
+}
+
+/**
+ * Document title drives the browser's PDF-filename suggestion in Save-as-PDF.
+ * `john_doe_invoice_cre-2026-0001` becomes `john_doe_invoice_cre-2026-0001.pdf`.
+ * Empty sender falls back to `invoice_<number>`.
+ */
+function buildTitle(fromName: string, invoiceNumber: string): string {
+  const senderSlug = slugify(fromName);
+  const numberSlug = slugify(invoiceNumber);
+  return senderSlug
+    ? `${senderSlug}_invoice_${numberSlug}`
+    : `invoice_${numberSlug}`;
 }
 
 function escapeHtml(s: string): string {

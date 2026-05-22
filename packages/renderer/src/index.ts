@@ -11,3 +11,4 @@ export {
   DEFAULT_DATE_FORMAT,
   type DateFormat,
 } from './format.js';
+export { slugify } from './slugify.js';

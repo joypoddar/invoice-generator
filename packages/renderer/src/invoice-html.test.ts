@@ -328,4 +328,22 @@ describe('renderInvoiceHtml', () => {
     const html = renderInvoiceHtml(makeInvoice());
     expect(html).not.toContain('Additional Information');
   });
+
+  describe('document title (drives PDF filename suggestion)', () => {
+    it('formats title as `<sender_slug>_invoice_<number_slug>`', () => {
+      const inv = makeInvoice();
+      inv.default.fromName = 'John Doe';
+      inv.default.invoiceNumber = 'CRE-2026-0001';
+      const html = renderInvoiceHtml(inv);
+      expect(html).toContain('<title>john_doe_invoice_cre-2026-0001</title>');
+    });
+
+    it('falls back to `invoice_<number>` when sender is empty', () => {
+      const inv = makeInvoice();
+      inv.default.fromName = '';
+      inv.default.invoiceNumber = 'INV-001';
+      const html = renderInvoiceHtml(inv);
+      expect(html).toContain('<title>invoice_inv-001</title>');
+    });
+  });
 });
