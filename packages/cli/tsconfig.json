@@ -7,5 +7,9 @@
   },
   "include": ["src/**/*"],
   "exclude": ["dist"],
-  "references": [{ "path": "../shared" }, { "path": "../core" }]
+  "references": [
+    { "path": "../shared" },
+    { "path": "../core" },
+    { "path": "../renderer" }
+  ]
 }
