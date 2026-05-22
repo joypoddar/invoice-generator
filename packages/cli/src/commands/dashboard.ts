@@ -51,6 +51,7 @@ async function runDashboard(id: string | undefined, opts: DashboardOptions): Pro
   const server = startServer({
     port,
     dbPath: dbPath(),
+    localUserName: config.name,
     renderOpts: {
       branding: {
         ...config.branding,

@@ -37,6 +37,24 @@ const DEFAULT_PRIMARY_COLOR = '#3949ab';
 const DEFAULT_FONT_FAMILY = "'Segoe UI', Arial, sans-serif";
 
 /**
+ * Shared print stylesheet used by both single-invoice (`renderInvoiceHtml`)
+ * and stacked-batch pages. Exported so the dashboard's batch view can paste it
+ * into its own <head> verbatim. `@page margin: 0` removes the browser's
+ * header/footer margin (URL + timestamp); the 1.5cm is restored as padding on
+ * .invoice-card so each card has the same visual breathing room.
+ */
+export const PRINT_CSS = `
+    @page { size: A4; margin: 0; }
+    @media print {
+      html, body { background: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; color-adjust: exact; }
+      body { margin: 0 !important; padding: 0 !important; }
+      .invoice-card { box-shadow: none !important; border-radius: 0 !important; padding: 1.5cm !important; max-width: 100% !important; margin: 0 !important; }
+      table, tr, td, th { page-break-inside: avoid; }
+      h1, h2, h3 { page-break-after: avoid; }
+      .no-print { display: none !important; }
+    }`;
+
+/**
  * Read a field from invoice.default first; fall back to invoice.custom under
  * the legacy key. Lets v1 invoices (which stored bank/phone/address in custom)
  * still render correctly after the Phase-4 schema migration.
@@ -49,7 +67,13 @@ function pickField(invoice: Invoice, defaultKey: string, customKey?: string): st
   return '';
 }
 
-export function renderInvoiceHtml(invoice: Invoice, opts: RenderOpts = {}): string {
+/**
+ * Render just the `<div class="invoice-card">…</div>` block — no doctype, html,
+ * head, body wrappers. Used by the dashboard's batch route to stack N invoices
+ * on one page (each in its own page-break wrapper). Single-invoice / email
+ * callers should use `renderInvoiceHtml` instead.
+ */
+export function renderInvoiceCard(invoice: Invoice, opts: RenderOpts = {}): string {
   const def = invoice.default;
   const items = (def.lineItems as LineItem[] | undefined) ?? [];
   const currency = (def.currency as string | undefined) ?? 'INR';
@@ -175,34 +199,8 @@ export function renderInvoiceHtml(invoice: Invoice, opts: RenderOpts = {}): stri
   // Signature block (opt-in via branding.signatureUrl).
   const signatureBlock = renderSignatureBlock(opts.branding, primary);
 
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>${escapeHtml(buildTitle(fromName, String(def.invoiceNumber)))}</title>
-  <style>
-    /* Print rules. Inline styles above keep the email rendering intact in
-       clients that strip <style>; these only kick in for window.print().
-       @page margin is 0 (not 1.5cm) so the browser has nowhere to draw its
-       default header (URL + page title) / footer (timestamp). The 1.5cm we
-       removed is added back inside .invoice-card as padding so the printed
-       content has the same visual breathing room. */
-    @page { size: A4; margin: 0; }
-    @media print {
-      html, body { background: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; color-adjust: exact; }
-      body { margin: 0 !important; padding: 0 !important; }
-      .invoice-card { box-shadow: none !important; border-radius: 0 !important; padding: 1.5cm !important; max-width: 100% !important; margin: 0 !important; }
-      table, tr, td, th { page-break-inside: avoid; }
-      h1, h2, h3 { page-break-after: avoid; }
-      .no-print { display: none !important; }
-    }
-  </style>
-</head>
-<body style="margin:0; padding:32px 16px; background:#f4f6fb; font-family: ${fontFamily};">
-
-  <div class="invoice-card" style="max-width:680px; margin:0 auto; background:#fff; border-radius:10px;
-              padding:40px 40px 36px; box-shadow:0 2px 16px rgba(57,73,171,0.08);">
+  return `<div class="invoice-card" style="max-width:680px; margin:0 auto; background:#fff; border-radius:10px;
+              padding:40px 40px 36px; box-shadow:0 2px 16px rgba(57,73,171,0.08); font-family: ${fontFamily};">
 
     <!-- ── Title ── -->
     <h1 style="margin:0 0 24px; font-size:32px; font-weight:700; color:${primary};">Invoice</h1>
@@ -348,7 +346,29 @@ export function renderInvoiceHtml(invoice: Invoice, opts: RenderOpts = {}): stri
     ${extraCustomSection}
     ${notesSection}
 
-  </div>
+  </div>`;
+}
+
+/**
+ * Full-document HTML for one invoice (doctype + html + head + body + card).
+ * Used by `sendInvoice` (email body) and the dashboard's invoice-detail page.
+ * The document <title> drives the browser's PDF-filename suggestion.
+ */
+export function renderInvoiceHtml(invoice: Invoice, opts: RenderOpts = {}): string {
+  const def = invoice.default;
+  const fromName = pickField(invoice, 'fromName');
+  const fontFamily = opts.branding?.fontFamily ?? DEFAULT_FONT_FAMILY;
+  const card = renderInvoiceCard(invoice, opts);
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>${escapeHtml(buildTitle(fromName, String(def.invoiceNumber)))}</title>
+  <style>${PRINT_CSS}</style>
+</head>
+<body style="margin:0; padding:32px 16px; background:#f4f6fb; font-family: ${fontFamily};">
+${card}
 </body>
 </html>`;
 }
