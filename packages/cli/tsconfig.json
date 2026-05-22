@@ -10,6 +10,7 @@
   "references": [
     { "path": "../shared" },
     { "path": "../core" },
-    { "path": "../renderer" }
+    { "path": "../renderer" },
+    { "path": "../dashboard" }
   ]
 }

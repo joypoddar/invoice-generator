@@ -16,6 +16,7 @@
   "dependencies": {
     "@inquirer/prompts": "^7.2.0",
     "@invoice/core": "workspace:*",
+    "@invoice/dashboard": "workspace:*",
     "@invoice/renderer": "workspace:*",
     "@invoice/shared": "workspace:*",
     "@napi-rs/keyring": "^1.1.7",

@@ -44,6 +44,9 @@ importers:
       '@invoice/core':
         specifier: workspace:*
         version: link:../core
+      '@invoice/dashboard':
+        specifier: workspace:*
+        version: link:../dashboard
       '@invoice/renderer':
         specifier: workspace:*
         version: link:../renderer
