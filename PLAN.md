@@ -1754,6 +1754,142 @@ Implementation: `validateEmail` checks against the same regex Zod uses (the stan
 - URL validation on `branding.logoUrl` / `signatureUrl`. Low ROI; the renderer already handles missing files silently.
 - Auto-migrating old configs to uppercase IFSC at load time. The defensive `.toUpperCase()` at render time covers display; `invoice setup bank` fixes the persisted value when the user next touches it.
 
+## Phase 5 — Hono dashboard, slice 1: print-to-PDF MVP
+
+### Context
+
+The user wants a PDF for invoices. Two non-starters:
+
+1. **Adding a PDF generator to the email pipeline** — every HTML→PDF library that handles the actual branded invoice (CSS, fonts, table layout, signature embed) brings Puppeteer/Chromium-class weight (~100MB+ Chromium download) and directly contradicts CLAUDE.md decision #6: _"No PDF anywhere in the pipeline."_
+2. **An in-email print button** — mail clients (Gmail, Outlook, Apple Mail, Thunderbird) strip JavaScript and `onclick` handlers for security. A `<button onclick="window.print()">` in the email body renders as a dead button.
+
+The right answer was always **Phase 5: the local Hono dashboard at `127.0.0.1`**. CLAUDE.md decision #11 and PLAN.md's Phase-5 description already specify it: _"the HTML invoice rendered in the dashboard is the customer-facing artifact; 'Print' uses `window.print()`."_ The sender runs `invoice dashboard`, the browser opens to the invoice, they click Print → Save as PDF. Zero new dependencies in the runtime weight class that matters; reuses the existing `renderInvoiceHtml` and its baked-in `@media print` CSS (Phase 4 Step 3 already has A4 sizing, page-break rules, white background, exact-color printing).
+
+The user's pivot ("can we rather move to the hono dashboard that will as an initial feature allow printing of pdf") means **Phase 5 starts now, and its first shipped slice is print-to-PDF**. Subsequent dashboard slices (full list page with filters, paid-toggle widget, sync API, analytics, CSV export) land later. This step-by-step replaces PLAN.md's monolithic Phase 5 with an incremental delivery.
+
+### Decisions confirmed
+
+- **Print is the headline feature of slice 1.** Everything else (sync widget, paid toggle, analytics) waits.
+- **Reuse `renderInvoiceHtml` from `packages/cli/src/email.ts`** — do not duplicate the renderer. To avoid `@invoice/dashboard` reaching into `@invoice/cli`'s package (which would pull in nodemailer/imapflow as transitive deps), extract the renderer + its helpers (`pickField`, `formatDate`, `formatCurrency`, signature embed, etc.) into a new `@invoice/renderer` workspace package. Both CLI's `email.ts` and the dashboard's invoice-detail view import from it.
+- **Bind to `127.0.0.1` only.** No flag to override; documented as a security property per CLAUDE.md.
+- **Hono with `hono/jsx`** for server-rendered pages — no bundler, no React on the client, no build step beyond `tsc`. Adapter: `@hono/node-server`.
+- **`invoice dashboard [id]` CLI command.** When `id` is given, browser opens straight to `/invoices/:id`. When omitted, opens `/invoices` (the list). Server runs in foreground; Ctrl+C stops it.
+- **List page is part of slice 1.** Without it, the user has to type/copy 36-char UUIDs into the URL. The list shows the same columns as `invoice list` (short id, number, customer, due, status, total, paid?) with each row linked to `/invoices/:id`. No filters yet — that's a later slice.
+- **No paid-toggle, no sync widget, no analytics in slice 1.** They're queued for slices 2, 3, 4.
+- **No customer-side PDF support added to the email path.** Customers who need a PDF use their mail client's built-in Print menu (every major client supports it). If real-world feedback later shows that's insufficient, attaching `invoice-<number>.html` as a second email attachment is a one-line addition — but defer until asked.
+
+### Step 1 — `@invoice/renderer` package extraction
+
+Move the rendering logic into a dedicated workspace package so both CLI (for sending emails) and dashboard (for viewing) can import without `@invoice/dashboard` taking on `nodemailer`/`imapflow` as transitive deps.
+
+**Files**:
+
+- `packages/renderer/package.json` — name `@invoice/renderer`, depends on `@invoice/shared`.
+- `packages/renderer/src/index.ts` — re-exports the public surface.
+- `packages/renderer/src/invoice-html.ts` — `renderInvoiceHtml(invoice, opts)` moved from `packages/cli/src/email.ts`. Plus the helpers it owns (`pickField`, `formatDate`, `formatCurrency`, `formatCurrencyMaybeInt`, signature-embed, table builders).
+- `packages/renderer/src/invoice-html.test.ts` — relocate the existing tests from `cli/src/email.test.ts` that exercise the renderer (keep the SMTP-send tests in `cli`).
+- `packages/cli/src/email.ts` — import `renderInvoiceHtml` from `@invoice/renderer`. Keep `sendInvoice`/`buildMailOptions` here (Node-only — `nodemailer`).
+- `packages/cli/package.json` + `tsconfig.json` — add `@invoice/renderer: workspace:*` dep + reference.
+
+**Checkpoint**: `pnpm -r build` clean. Existing `invoice send` still produces an email with the same HTML body (snapshot or diff-based test).
+
+### Step 2 — `packages/dashboard/` scaffold + invoice detail page
+
+**Files**:
+
+- `packages/dashboard/package.json` — name `@invoice/dashboard`, bin (none — invoked via `@invoice/cli`'s `dashboard` command), deps: `hono`, `@hono/node-server`, `@invoice/renderer`, `@invoice/core`.
+- `packages/dashboard/tsconfig.json` — extends base; `composite: true`; `outDir: dist`; `jsx: "react-jsx"`, `jsxImportSource: "hono/jsx"`.
+- `packages/dashboard/src/server.ts` — Hono app, `startServer(port, dbPath)` returns `{ stop }` for the CLI to manage. Mounts:
+  - `GET /` → redirect to `/invoices`.
+  - `GET /invoices/:id` → invoice-detail view.
+  - (Step 3 adds `GET /invoices` — list view.)
+- `packages/dashboard/src/views/layout.tsx` — base HTML shell. Inline `<style>` for the toolbar (`.toolbar` flexbox, `.btn-print` styling) wrapped in a single `.no-print` class so it disappears in printed output.
+- `packages/dashboard/src/views/invoice-detail.tsx` — calls `renderInvoiceHtml(invoice, opts)` from `@invoice/renderer`, wraps the returned string in the layout with a `.toolbar` showing `[← All invoices] [🖨 Print / Save as PDF]`. The Print button is `<button onclick="window.print()">` — this DOES work in a real browser; the JS-stripping issue only applies to email clients.
+- `packages/dashboard/src/public/style.css` — minimal: `.no-print { display: none !important; }` inside `@media print`; toolbar layout otherwise.
+
+**Checkpoint**: `pnpm -F @invoice/dashboard build && pnpm -F @invoice/dashboard exec node dist/server.js` opens a server on a test port; `curl http://127.0.0.1:<port>/invoices/<id>` returns HTML matching the email body plus the toolbar.
+
+### Step 3 — Invoice list page (`GET /invoices`)
+
+**File**: `packages/dashboard/src/views/invoice-list.tsx` — server-rendered table with the same columns as `invoice list` (Id (short), Number, Customer, Due, Status, Total, Paid?). Each row is `<a href="/invoices/:id">…</a>`. Empty state when the DB is empty.
+
+**File**: `packages/dashboard/src/server.ts` — add `GET /invoices` route calling `store.list()`.
+
+**Checkpoint**: `curl http://127.0.0.1:<port>/invoices` returns an HTML table with all rows in `local.db`. Clicking through to `/invoices/<id>` shows the detail page.
+
+### Step 4 — `invoice dashboard [id]` CLI command
+
+**Files**:
+
+- `packages/cli/src/commands/dashboard.ts` (new):
+  - `invoice dashboard [id]` — optional positional id (full UUID, short id, or invoice number — resolved via `resolveInvoice` from `resolver.ts`).
+  - `--port <number>` — default from `config.dashboard.port` (already in the schema, defaults to 3000).
+  - Spawns the Hono server via `@invoice/dashboard.startServer(port, dbPath)`.
+  - Opens the browser via `open(url)` — points to `/invoices/<id>` when id given, else `/invoices`.
+  - Logs `"Dashboard running at http://127.0.0.1:<port>. Ctrl+C to stop."` and blocks.
+  - On Ctrl+C: gracefully stops the server.
+- `packages/cli/src/index.ts` — register the command.
+- `packages/cli/package.json` — add `@invoice/dashboard: workspace:*` dep.
+
+**Checkpoint**:
+
+- `invoice dashboard` → browser opens to `/invoices` (list).
+- `invoice dashboard <id>` → browser opens straight to `/invoices/<id>`.
+- Clicking the Print button → browser's print dialog opens → "Save as PDF" → file lands on disk. The `.no-print` toolbar is hidden in the PDF; the invoice card is the only content on the page (matches the existing email-body print CSS).
+
+### Step 5 — Print hardening + verification + housekeeping
+
+**Print hardening** (`packages/dashboard/src/public/style.css`):
+
+- Ensure `.no-print { display: none !important; }` covers the toolbar.
+- `@page { size: A4; margin: 1.5cm; }` already in the renderer's inline `<style>` — verify it carries over via `renderInvoiceHtml`.
+- `body { background: white; }` in print so the dashboard's page chrome doesn't bleed into the PDF.
+- Test in Chrome + Firefox + Safari. The renderer already passes Chrome print testing (Phase 4.5 verification); confirm no dashboard-added chrome breaks it.
+
+**Build wiring**:
+
+- Root `pnpm-workspace.yaml` — `packages/dashboard/` should already be picked up via `packages/*` glob.
+- Root `tsconfig.json` — add `{ "path": "./packages/dashboard" }` to references.
+
+**Verification** — new "Phase 5 verification" section in `TESTING.md`:
+
+- P5.1 — `invoice dashboard` opens the browser to the list page.
+- P5.2 — `invoice dashboard <id>` opens straight to the detail.
+- P5.3 — Detail page renders the same HTML as the email body (eyeball-compare a sent invoice's email vs the dashboard view).
+- P5.4 — Print button triggers the browser's print dialog; "Save as PDF" produces a clean A4 PDF with no toolbar chrome.
+- P5.5 — Server bound to `127.0.0.1`: `curl http://<this-machine-LAN-ip>:<port>/invoices` from another machine returns connection-refused.
+- P5.6 — Ctrl+C cleanly stops the server.
+
+**Update**:
+
+- `CLAUDE.md` — flip "Active phase" to "Phase 5 (dashboard slice 1) complete; Phase 5 slice 2 (sync widget) next". Add Phase-5-slice-1 deviations: renderer extracted to `@invoice/renderer`, list page added in slice 1 (not deferred), print is the headline.
+- `TESTING.md` — P5 verification block per above.
+- `PLAN.md` — sync from canonical plan file.
+
+### Critical files to create
+
+- `packages/renderer/` (NEW package — extraction of `renderInvoiceHtml` + helpers)
+- `packages/dashboard/` (NEW package — Hono server + views + minimal CSS)
+- `packages/cli/src/commands/dashboard.ts` (NEW — `invoice dashboard [id]`)
+
+### Critical files to modify
+
+- `packages/cli/src/email.ts` (import renderer from `@invoice/renderer`)
+- `packages/cli/src/email.test.ts` (drop the renderer tests — relocated to `@invoice/renderer`)
+- `packages/cli/src/index.ts` (register `dashboard` command)
+- `packages/cli/package.json` (add `@invoice/dashboard` + `@invoice/renderer` workspace deps)
+- Root `tsconfig.json`, root `package.json` (workspace references)
+
+### Out of scope (deferred to later slices of Phase 5)
+
+- **Slice 2: sync widget** — `POST /sync` endpoint + a "Sync now" button on the list page.
+- **Slice 3: paid-toggle** — `PATCH /invoices/:id/status` + interactive toggle on the detail page.
+- **Slice 4: analytics** — `/analytics` aggregate cards (total billed, outstanding, top customers, monthly trend).
+- **Slice 5: CSV export** — `GET /export/csv` streaming download.
+- **Filter UI on the list page** — query-string filters (`?status=unpaid&overdue=1`). Slice 2 polish.
+- **A customer-side path to PDF** (e.g., attached HTML in the email). Recipients use their mail client's built-in Print menu; we revisit only if real-world use shows it's insufficient.
+- **Adding PDF generation anywhere in the pipeline.** Stays out per CLAUDE.md decision #6. Dashboard's `window.print()` is the supported PDF path.
+
 ## Out of scope (explicit non-goals)
 
 - Any hosted/cloud component beyond the mail provider itself.
