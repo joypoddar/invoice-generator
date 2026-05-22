@@ -37,6 +37,29 @@ describe('renderInvoiceListPage', () => {
     expect(html).toContain('Acme');
   });
 
+  it('renders a checkbox column with a select-all in the header', () => {
+    const html = renderInvoiceListPage([makeInvoice()]);
+    expect(html).toContain('id="select-all"');
+    expect(html).toMatch(/<input type="checkbox" name="invoice" value="[^"]+"/);
+  });
+
+  it('renders a sticky toolbar with a "Print selected" button (disabled by default)', () => {
+    const html = renderInvoiceListPage([makeInvoice()]);
+    expect(html).toContain('id="print-selected"');
+    expect(html).toMatch(/<button[^>]*id="print-selected"[^>]*disabled/);
+    expect(html).toContain('Print selected');
+  });
+
+  it('inline script wires up navigation to /invoices/print?ids=', () => {
+    const html = renderInvoiceListPage([makeInvoice()]);
+    expect(html).toContain('/invoices/print?ids=');
+  });
+
+  it('enforces a 50-invoice batch cap via confirm dialog', () => {
+    const html = renderInvoiceListPage([makeInvoice()]);
+    expect(html).toMatch(/Only the first 50 will be printed/);
+  });
+
   it('shows draft vs sent badges', () => {
     const drafts = renderInvoiceListPage([makeInvoice()]);
     expect(drafts).toContain('badge-draft');
