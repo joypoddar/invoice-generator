@@ -34,22 +34,44 @@ A CLI-first invoice tool for the Creowis team. Every team member runs the same `
 
 ## Install (beta)
 
-The latest beta tarball is attached to each GitHub Release.
+The latest beta tarball is attached to the latest [GitHub
+Release](https://github.com/joypoddar/invoice-generator/releases/latest).
+
+### Before you start
+
+- **Node 22+**. The CLI uses the built-in `node:sqlite` module. If you're on
+  Node 20 or older, install a newer Node via
+  [nvm](https://github.com/nvm-sh/nvm) or [fnm](https://github.com/Schniz/fnm)
+  first. (`node --version` to check.)
+- **An app password** from your mail provider (Gmail, Fastmail, etc.). The
+  setup wizard will ask for it. Generate it ahead of time so you don't have
+  to pause halfway through.
+
+### Install
+
+Replace `<version>` with the version on the [releases
+page](https://github.com/joypoddar/invoice-generator/releases/latest) (e.g.
+`0.1.0-beta.1`).
 
 ```bash
-# 1. Grab invoice-cli-0.1.0-beta.1.tgz from the latest release on GitHub
-# 2. Install globally
-npm install -g ./invoice-cli-0.1.0-beta.1.tgz
+# Download the tarball
+curl -LO https://github.com/joypoddar/invoice-generator/releases/download/v<version>/invoice-cli-<version>.tgz
 
-# 3. Run the interactive setup
+# Install globally
+npm install -g ./invoice-cli-<version>.tgz
+
+# Run the interactive setup
 invoice init
 ```
 
-Requires Node 22+ (uses the built-in `node:sqlite`).
+Or download the `.tgz` from the releases page in your browser and
+`npm install -g ./<file>` the path you saved it to.
 
-Bugs and feedback: please file a [GitHub Issue](../../issues) — include the
-output of `invoice --version` and `invoice config doctor` if the problem is
-config-related.
+### Reporting bugs
+
+File a [GitHub Issue](https://github.com/joypoddar/invoice-generator/issues)
+— include the output of `invoice --version` and `invoice config doctor` if
+the problem is config-related.
 
 ### For contributors (dev install from source)
 
