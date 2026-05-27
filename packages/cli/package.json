@@ -1,32 +1,48 @@
 {
   "name": "@invoice/cli",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0-beta.1",
+  "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "bin": {
     "invoice": "./dist/index.js"
   },
   "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
   "scripts": {
-    "build": "tsc --build",
-    "build:clean": "tsc --build --clean",
-    "typecheck": "tsc --build"
+    "prepack": "cp ../../LICENSE ./LICENSE",
+    "build": "tsup",
+    "build:clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "publishConfig": {
+    "access": "restricted"
   },
   "dependencies": {
+    "@hono/node-server": "^1.13.7",
     "@inquirer/prompts": "^7.2.0",
+    "@napi-rs/keyring": "^1.1.7",
+    "commander": "^13.0.0",
+    "hono": "^4.6.14",
+    "imapflow": "^1.0.180",
+    "mailparser": "^3.7.0",
+    "nodemailer": "^6.9.16",
+    "open": "^10.1.0",
+    "uuid": "^11.0.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
     "@invoice/core": "workspace:*",
     "@invoice/dashboard": "workspace:*",
     "@invoice/renderer": "workspace:*",
     "@invoice/shared": "workspace:*",
-    "@napi-rs/keyring": "^1.1.7",
-    "commander": "^13.0.0",
-    "nodemailer": "^6.9.16",
-    "open": "^10.1.0",
-    "uuid": "^11.0.0"
-  },
-  "devDependencies": {
     "@types/node": "^22.0.0",
-    "@types/nodemailer": "^6.4.17"
+    "@types/nodemailer": "^6.4.17",
+    "tsup": "^8.3.5"
   }
 }

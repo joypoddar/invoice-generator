@@ -32,19 +32,35 @@ A CLI-first invoice tool for the Creowis team. Every team member runs the same `
 - **Dashboard**: `invoice dashboard` spawns a Hono server on `127.0.0.1:3000`. Server-rendered HTML, no React, no bundler.
 - **Backup**: the mail provider preserves every invoice email forever. Lose `local.db` and `invoice sync --backfill` rebuilds it.
 
-## Quick start (after Phase 1)
+## Install (beta)
+
+The latest beta tarball is attached to each GitHub Release.
 
 ```bash
-npm install
-npm run build
-cd packages/cli && npm link
+# 1. Grab invoice-cli-0.1.0-beta.1.tgz from the latest release on GitHub
+# 2. Install globally
+npm install -g ./invoice-cli-0.1.0-beta.1.tgz
 
-invoice init          # interactive: name, email, SMTP + IMAP creds, folder picker
-invoice new           # create an invoice
-invoice send <id>     # confirm recipients, then send
-invoice sync          # pull your sent invoice back into local.db
-invoice list          # show local DB
+# 3. Run the interactive setup
+invoice init
 ```
+
+Requires Node 22+ (uses the built-in `node:sqlite`).
+
+Bugs and feedback: please file a [GitHub Issue](../../issues) — include the
+output of `invoice --version` and `invoice config doctor` if the problem is
+config-related.
+
+### For contributors (dev install from source)
+
+```bash
+pnpm install
+pnpm build
+cd packages/cli && pnpm link --global
+```
+
+After that, `invoice init / new / send / sync / list` work the same as the
+beta install.
 
 ## Setup recipes
 
