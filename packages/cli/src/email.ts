@@ -62,6 +62,23 @@ export function buildMailOptions(
   return result;
 }
 
+export async function sendInvoice(
+  invoice: Invoice,
+  recipients: Recipients,
+  smtp: SmtpConfig,
+  password: string,
+  opts: RenderOpts = {},
+): Promise<void> {
+  const transporter = createTransport({
+    host: smtp.host,
+    port: smtp.port,
+    secure: smtp.secure ?? smtp.port === 465,
+    auth: { user: smtp.user, pass: password },
+  });
+  const mail = buildMailOptions(invoice, recipients, smtp.user, opts);
+  await transporter.sendMail(mail);
+}
+
 function renderVoucherSubject(template: string, voucher: Voucher): string {
   return template
     .replaceAll('{voucherNumber}', voucher.voucherNumber)
