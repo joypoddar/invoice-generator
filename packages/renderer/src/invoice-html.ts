@@ -1,8 +1,6 @@
-import { readFileSync } from 'node:fs';
-import { extname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { hasCustomFields, type Invoice, type LineItem } from '@invoice/shared';
 import { formatCurrency, formatCurrencyMaybeInt, formatDate } from './format.js';
+import { resolveImageSrc } from './image-embed.js';
 import { slugify } from './slugify.js';
 
 export interface BrandingOpts {
@@ -376,41 +374,13 @@ ${card}
 function renderSignatureBlock(branding: BrandingOpts | undefined, primary: string): string {
   const url = branding?.signatureUrl;
   if (!url) return '';
-  const src = resolveSignatureSrc(url);
+  const src = resolveImageSrc(url);
   if (!src) return '';
   const label = branding?.signatoryLabel ?? 'Authorised Signatory';
   return `<div style="margin-top:8px; text-align:right;">
     <img src="${src}" alt="Signature" style="max-height:60px; max-width:240px;" />
     <p style="margin:4px 0 0; font-size:12px; color:${primary};">${escapeHtml(label)}</p>
   </div>`;
-}
-
-/**
- * Resolve a signature URL/path into something an `<img src>` can render.
- * - http(s):// URLs pass through.
- * - file:// or absolute/relative paths are read + base64-embedded so the email
- *   doesn't depend on an external fetch.
- * - Returns null when the path is invalid or unreadable (renderer omits block).
- */
-function resolveSignatureSrc(urlOrPath: string): string | null {
-  if (/^https?:\/\//i.test(urlOrPath)) return urlOrPath;
-  if (urlOrPath.startsWith('data:')) return urlOrPath;
-  const path = urlOrPath.startsWith('file://') ? fileURLToPath(urlOrPath) : urlOrPath;
-  try {
-    const buf = readFileSync(path);
-    const ext = extname(path).toLowerCase();
-    const mime =
-      ext === '.jpg' || ext === '.jpeg'
-        ? 'image/jpeg'
-        : ext === '.svg'
-          ? 'image/svg+xml'
-          : ext === '.gif'
-            ? 'image/gif'
-            : 'image/png';
-    return `data:${mime};base64,${buf.toString('base64')}`;
-  } catch {
-    return null;
-  }
 }
 
 function renderBankRow(label: string, value: string): string {
