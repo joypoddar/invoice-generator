@@ -1,5 +1,5 @@
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
-import { hasCustomFields, totalFor, type Invoice } from '@invoice/shared';
+import { hasCustomFields, totalFor, voucherTotal, type Invoice, type Voucher } from '@invoice/shared';
 import type {
   AggregateResult,
   AggregateSpec,
@@ -49,12 +49,24 @@ CREATE TABLE IF NOT EXISTS recurring_invoices (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS vouchers (
+  id TEXT PRIMARY KEY,
+  voucher_number TEXT NOT NULL,
+  pay_to TEXT,
+  date TEXT,
+  currency TEXT,
+  total REAL,
+  created_at TEXT NOT NULL,
+  raw_json TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_invoices_due_date ON invoices(due_date);
 CREATE INDEX IF NOT EXISTS idx_invoices_from ON invoices(from_email);
 CREATE INDEX IF NOT EXISTS idx_invoices_customer ON invoices(customer_name);
 CREATE INDEX IF NOT EXISTS idx_invoices_payment ON invoices(payment_status);
 CREATE INDEX IF NOT EXISTS idx_invoices_has_custom ON invoices(has_custom_fields);
 CREATE INDEX IF NOT EXISTS idx_recurring_next_run ON recurring_invoices(next_run);
+CREATE INDEX IF NOT EXISTS idx_vouchers_date ON vouchers(date);
 `;
 
 const SORT_COLUMN: Record<SortField, string> = {
@@ -240,6 +252,60 @@ export class SqliteStore implements InvoiceStore {
       )
       .all({ asOf }) as unknown as RecurringRow[];
     return rows.map(rowToRecurring);
+  }
+
+  // ───── Payment vouchers ─────
+  // Vouchers are a separate domain from invoices (paid-out records, not emailed
+  // or synced). Their methods live on SqliteStore — not the InvoiceStore
+  // interface — same as the recurring methods above. The full object round-trips
+  // through raw_json; indexed columns exist only for listing/sorting.
+
+  upsertVoucher(voucher: Voucher): void {
+    this.db
+      .prepare(
+        `INSERT INTO vouchers (
+          id, voucher_number, pay_to, date, currency, total, created_at, raw_json
+        ) VALUES (
+          :id, :voucher_number, :pay_to, :date, :currency, :total, :created_at, :raw_json
+        )
+        ON CONFLICT(id) DO UPDATE SET
+          voucher_number = excluded.voucher_number,
+          pay_to = excluded.pay_to,
+          date = excluded.date,
+          currency = excluded.currency,
+          total = excluded.total,
+          created_at = excluded.created_at,
+          raw_json = excluded.raw_json`,
+      )
+      .run({
+        id: voucher.id,
+        voucher_number: voucher.voucherNumber,
+        pay_to: optionalString(voucher.payTo),
+        date: optionalString(voucher.date),
+        currency: optionalString(voucher.currency),
+        total: voucherTotal(voucher),
+        created_at: voucher.createdAt,
+        raw_json: JSON.stringify(voucher),
+      });
+  }
+
+  getVoucher(id: string): Voucher | null {
+    const row = this.db.prepare('SELECT raw_json FROM vouchers WHERE id = ?').get(id) as
+      | { raw_json: string }
+      | undefined;
+    return row ? (JSON.parse(row.raw_json) as Voucher) : null;
+  }
+
+  listVouchers(): Voucher[] {
+    const rows = this.db
+      .prepare('SELECT raw_json FROM vouchers ORDER BY date DESC, created_at DESC')
+      .all() as { raw_json: string }[];
+    return rows.map((r) => JSON.parse(r.raw_json) as Voucher);
+  }
+
+  deleteVoucher(id: string): boolean {
+    const result = this.db.prepare('DELETE FROM vouchers WHERE id = ?').run(id);
+    return result.changes > 0;
   }
 
   close(): void {

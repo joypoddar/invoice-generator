@@ -9,6 +9,13 @@ export {
 } from './invoice.js';
 
 export {
+  type VoucherLine,
+  type Voucher,
+  renderVoucherNumber,
+  voucherTotal,
+} from './voucher.js';
+
+export {
   INVOICE_HEADER_NAME,
   INVOICE_HEADER_VALUE,
   subjectFor,
