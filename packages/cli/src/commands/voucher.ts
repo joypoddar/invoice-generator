@@ -25,7 +25,7 @@ import {
 import { setupCustomer } from './init.js';
 import { resolveVoucherNumberSpec } from '../voucher-number.js';
 import { getPassword, SMTP_PASSWORD_ACCOUNT } from '../secrets.js';
-import { buildVoucherMailOptions, sendVoucher, type Recipients } from '../email.js';
+import { sendVoucher, type Recipients } from '../email.js';
 import { composeRecipientsForCustomerSlug } from '../recipients.js';
 
 const DRAFT = 'voucher-new';
@@ -295,7 +295,7 @@ async function runNew(opts: NewOptions): Promise<void> {
   console.log(`  id:      ${voucher.id}`);
   console.log(`  pay to:  ${payTo}`);
   console.log(`  total:   ${formatCurrency(voucherTotal(voucher), currency)}`);
-  console.log(`\nPrint it with \`invoice voucher print ${voucher.id}\`.`);
+  console.log(`\nSend it with \`invoice voucher send ${voucher.id}\`.`);
 }
 
 async function runSend(id: string | undefined, opts: VoucherSendOptions): Promise<void> {
