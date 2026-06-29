@@ -35,4 +35,21 @@ describe('resolveVoucherNumberSpec', () => {
     expect(spec.format).toBe('PV-{YYYY}-{SEQ}');
     expect(spec.seq).toBe(7);
   });
+
+  it('uses a billing-to customer counter when available', () => {
+    const config = makeConfig();
+    config.customers = {
+      acme: {
+        name: 'Acme Corp',
+        address: 'Mumbai',
+        defaultRecipientTo: [],
+        defaultRecipientCc: [],
+        nextSeq: 42,
+      },
+    };
+
+    const spec = resolveVoucherNumberSpec(config, 'acme');
+    expect(spec.format).toBe('{INITIALS}_{MMM}{YY}_{SEQ}');
+    expect(spec.seq).toBe(42);
+  });
 });
