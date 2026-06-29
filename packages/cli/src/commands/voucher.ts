@@ -2,13 +2,27 @@ import { randomUUID } from 'node:crypto';
 import type { Command } from 'commander';
 import { confirm, input, select } from '@inquirer/prompts';
 import open from 'open';
-import { renderVoucherNumber, voucherTotal, type Voucher, type VoucherLine } from '@invoice/shared';
+import {
+  renderVoucherNumber,
+  voucherTotal,
+  type Config,
+  type Voucher,
+  type VoucherLine,
+} from '@invoice/shared';
 import { SqliteStore } from '@invoice/core';
 import { startServer } from '@invoice/dashboard';
 import { formatCurrency } from '@invoice/renderer';
 import { dbPath, loadConfigSafe, saveConfig } from '../store.js';
 import { clearDraft, draftExists, loadDraft, saveDraft } from '../drafts.js';
-import { findCustomerSlug, getCustomer, listCustomers } from '../customers.js';
+import {
+  bumpCustomerSeq,
+  findCustomerSlug,
+  getCustomer,
+  listCustomers,
+  setCustomer,
+  slugFor,
+} from '../customers.js';
+import { setupCustomer } from './init.js';
 import { resolveVoucherNumberSpec } from '../voucher-number.js';
 
 const DRAFT = 'voucher-new';
@@ -29,19 +43,29 @@ interface NewOptions {
   customer?: string;
 }
 
+export function resolveVoucherCompanyInfo(
+  config: Config,
+  customer: Config['customers'][string] | null | undefined,
+): Pick<Voucher, 'companyName' | 'companyAddress'> {
+  const companyName = customer?.name?.trim() || config.company.name || '';
+  const companyAddress = customer?.address?.trim() || config.company.address || '';
+
+  return {
+    ...(companyName ? { companyName } : {}),
+    ...(companyAddress ? { companyAddress } : {}),
+  };
+}
+
 export function register(program: Command): void {
   const voucher = program.command('voucher').description('Create and print payment vouchers');
 
   voucher
     .command('new')
     .description('Create a new payment voucher (interactive)')
-    .option('--customer <name-or-slug>', 'pre-pick a saved customer as the payee')
+    .option('--customer <name-or-slug>', 'pre-pick the billed-to customer')
     .action(runNew);
 
-  voucher
-    .command('list')
-    .description('List saved payment vouchers')
-    .action(runList);
+  voucher.command('list').description('List saved payment vouchers').action(runList);
 
   voucher
     .command('print [id]')
@@ -52,7 +76,7 @@ export function register(program: Command): void {
 }
 
 async function runNew(opts: NewOptions): Promise<void> {
-  const config = loadConfigSafe();
+  let config = loadConfigSafe();
   if (!config) {
     console.error('Not configured. Run `invoice init` first.');
     process.exit(1);
@@ -60,7 +84,10 @@ async function runNew(opts: NewOptions): Promise<void> {
 
   let draft: VoucherDraft = {};
   if (draftExists(DRAFT)) {
-    const resume = await confirm({ message: 'Resume previous new-voucher session?', default: true });
+    const resume = await confirm({
+      message: 'Resume previous new-voucher session?',
+      default: true,
+    });
     if (resume) draft = loadDraft<VoucherDraft>(DRAFT) ?? {};
     else clearDraft(DRAFT);
   }
@@ -73,43 +100,85 @@ async function runNew(opts: NewOptions): Promise<void> {
   const date = draft.date ?? toIsoDate(new Date());
   persist({ voucherId, date });
 
-  // Payee: --customer flag, then interactive picker, then manual entry.
-  let payTo = draft.payTo;
-  let customerSlug = draft.customerSlug;
-  if (payTo === undefined && opts.customer) {
-    const picked = getCustomer(config, opts.customer);
-    if (!picked) {
-      console.error(
-        `No customer matching "${opts.customer}". Use \`invoice customer list\` to see saved customers.`,
-      );
-      process.exit(1);
+  let billingCustomerSlug = draft.customerSlug;
+  if (!billingCustomerSlug && opts.customer) {
+    const existingSlug = findCustomerSlug(config, opts.customer);
+    if (existingSlug) {
+      billingCustomerSlug = existingSlug;
+      persist({ customerSlug: existingSlug });
+    } else {
+      const add = await confirm({
+        message: `Customer "${opts.customer}" not found. Add as a saved customer?`,
+        default: true,
+      });
+      if (!add) {
+        console.error('Billing customer is required.');
+        process.exit(1);
+      }
+      const newCustomer = await setupCustomer({ name: opts.customer });
+      const slug = slugFor(newCustomer.name);
+      if (!slug) {
+        console.error('Customer name must contain an alphanumeric character.');
+        process.exit(1);
+      }
+      config = setCustomer(config, slug, newCustomer);
+      saveConfig(config);
+      billingCustomerSlug = slug;
+      persist({ customerSlug: slug });
     }
-    payTo = picked.name;
-    customerSlug = findCustomerSlug(config, opts.customer) ?? undefined;
-    persist({ payTo, customerSlug });
   }
-  if (payTo === undefined) {
-    const saved = listCustomers(config);
-    if (saved.length > 0) {
-      const NEW_SENTINEL = '__new__';
+
+  if (!billingCustomerSlug) {
+    let saved = listCustomers(config);
+    if (saved.length === 0) {
+      console.log('No saved customers. A billed-to customer is required for vouchers.');
+      const add = await confirm({ message: 'Add a customer now?', default: true });
+      if (!add) {
+        console.error('Billing customer is required.');
+        process.exit(1);
+      }
+      const newCustomer = await setupCustomer();
+      const slug = slugFor(newCustomer.name);
+      if (!slug) {
+        console.error('Customer name must contain an alphanumeric character.');
+        process.exit(1);
+      }
+      config = setCustomer(config, slug, newCustomer);
+      saveConfig(config);
+      billingCustomerSlug = slug;
+      persist({ customerSlug: slug });
+      saved = listCustomers(config);
+    }
+
+    if (!billingCustomerSlug) {
+      const NEW_CUSTOMER = '__new_customer__';
       const choice = await select({
-        message: 'Pay to (pick a saved customer or enter manually):',
+        message: 'Billing to (select a saved customer):',
         choices: [
           ...saved.map(([slug, c]) => ({ name: c.name, value: slug })),
-          { name: '+ Enter manually', value: NEW_SENTINEL },
+          { name: '+ Add new customer', value: NEW_CUSTOMER },
         ],
         default: saved[0]?.[0],
       });
-      if (choice !== NEW_SENTINEL) {
-        const picked = getCustomer(config, choice);
-        if (picked) {
-          payTo = picked.name;
-          customerSlug = choice;
-          persist({ payTo, customerSlug });
+      if (choice === NEW_CUSTOMER) {
+        const newCustomer = await setupCustomer();
+        const slug = slugFor(newCustomer.name);
+        if (!slug) {
+          console.error('Customer name must contain an alphanumeric character.');
+          process.exit(1);
         }
+        config = setCustomer(config, slug, newCustomer);
+        saveConfig(config);
+        billingCustomerSlug = slug;
+        persist({ customerSlug: slug });
+      } else {
+        billingCustomerSlug = choice;
+        persist({ customerSlug: choice });
       }
     }
   }
+
+  let payTo = draft.payTo;
   if (payTo === undefined) {
     payTo = await input({ message: 'Payment to:', required: true });
     persist({ payTo });
@@ -118,13 +187,18 @@ async function runNew(opts: NewOptions): Promise<void> {
   const voucherDate = await input({ message: 'Date (YYYY-MM-DD):', default: date });
   persist({ date: voucherDate });
 
-  const currency = await input({ message: 'Currency:', default: draft.currency ?? config.currency });
+  const currency = await input({
+    message: 'Currency:',
+    default: draft.currency ?? config.currency,
+  });
   persist({ currency });
 
   console.log('\nLine items:');
   const lines: VoucherLine[] = draft.lines ? [...draft.lines] : [];
   if (lines.length > 0) {
-    console.log(`  (${lines.length} line(s) from previous session — continuing where you left off)`);
+    console.log(
+      `  (${lines.length} line(s) from previous session — continuing where you left off)`,
+    );
   }
   let addItem = true;
   while (addItem) {
@@ -148,27 +222,41 @@ async function runNew(opts: NewOptions): Promise<void> {
     process.exit(1);
   }
 
-  const preparedBy = await input({ message: 'Prepared by:', default: draft.preparedBy ?? config.name });
+  const preparedBy = await input({
+    message: 'Prepared by:',
+    default: draft.preparedBy ?? config.name,
+  });
   persist({ preparedBy });
-  const receivedBy = await input({ message: 'Received by:', default: draft.receivedBy ?? config.name });
+  const receivedBy = await input({
+    message: 'Received by:',
+    default: draft.receivedBy ?? config.name,
+  });
   persist({ receivedBy });
   const notes = await input({ message: 'Notes (optional):', default: draft.notes ?? '' });
   persist({ notes });
 
-  const spec = resolveVoucherNumberSpec(config);
-  const voucherNumber = renderVoucherNumber(spec.format, spec.seq, new Date(voucherDate), spec.initials);
+  const spec = resolveVoucherNumberSpec(config, billingCustomerSlug);
+  const voucherNumber = renderVoucherNumber(
+    spec.format,
+    spec.seq,
+    new Date(voucherDate),
+    spec.initials,
+  );
+  const companyInfo = resolveVoucherCompanyInfo(
+    config,
+    billingCustomerSlug ? getCustomer(config, billingCustomerSlug) : null,
+  );
 
   const voucher: Voucher = {
     id: voucherId,
     voucherNumber,
     title: config.voucher.title,
     payTo,
-    ...(customerSlug ? { customerSlug } : {}),
+    ...(billingCustomerSlug ? { customerSlug: billingCustomerSlug } : {}),
     date: voucherDate,
     currency,
     lines,
-    ...(config.company.name ? { companyName: config.company.name } : {}),
-    ...(config.company.address ? { companyAddress: config.company.address } : {}),
+    ...companyInfo,
     preparedBy,
     receivedBy,
     ...(notes ? { notes } : {}),
@@ -182,7 +270,11 @@ async function runNew(opts: NewOptions): Promise<void> {
     store.close();
   }
 
-  saveConfig({ ...config, voucher: { ...config.voucher, nextSeq: config.voucher.nextSeq + 1 } });
+  if (billingCustomerSlug) {
+    saveConfig(bumpCustomerSeq(config, billingCustomerSlug));
+  } else {
+    saveConfig({ ...config, voucher: { ...config.voucher, nextSeq: config.voucher.nextSeq + 1 } });
+  }
   clearDraft(DRAFT);
 
   console.log(`\nCreated voucher ${voucherNumber}`);

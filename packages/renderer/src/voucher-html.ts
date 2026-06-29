@@ -133,7 +133,9 @@ export function renderVoucherCard(voucher: Voucher, opts: RenderOpts = {}): stri
       }
 
       <!-- ── Signature rule ── -->
-      <div style="margin:52px auto 0; width:55%; border-bottom:1px solid #333;"></div>
+      <div style="margin:52px 0 0; text-align:center;">
+        <span style="border-bottom:1px solid #333; display:inline-block; width:55%; padding-bottom:4px;">&nbsp;</span>
+      </div>
 
       <!-- ── Prepared / Received ── -->
       <table style="width:100%; border-collapse:collapse; margin-top:40px; font-size:14px;">
