@@ -32,6 +32,8 @@ export function renderInvoiceListPage(invoices: Invoice[]): string {
       border-radius:6px; font-size:14px; font-weight:600; cursor:pointer;
     }
     .btn-print:disabled { background:#a3a8c4; cursor:not-allowed; }
+    .nav a { color:#3949ab; text-decoration:none; font-size:14px; margin-right:14px; }
+    .nav a.active { font-weight:700; text-decoration:underline; }
     table { width:100%; border-collapse:collapse; background:#fff; border-radius:8px; overflow:hidden; box-shadow:0 1px 4px rgba(57,73,171,0.08); }
     thead { background:#3949ab; color:#fff; }
     th, td { padding:11px 14px; text-align:left; font-size:13px; }
@@ -54,6 +56,7 @@ export function renderInvoiceListPage(invoices: Invoice[]): string {
   <div class="wrap">
     <div class="toolbar no-print">
       <h1 style="margin:0; flex:1;">Invoices</h1>
+      <span class="nav"><a href="/invoices" class="active">Invoices</a><a href="/vouchers">Vouchers</a></span>
       <button id="print-selected" class="btn-print" disabled>🖨 Print selected</button>
     </div>
     <table>
