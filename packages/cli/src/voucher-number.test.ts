@@ -52,4 +52,22 @@ describe('resolveVoucherNumberSpec', () => {
     expect(spec.format).toBe('{INITIALS}_{MMM}{YY}_{SEQ}');
     expect(spec.seq).toBe(42);
   });
+
+  it('does not use a customer invoice number format for vouchers', () => {
+    const config = makeConfig();
+    config.customers = {
+      acme: {
+        name: 'Acme Corp',
+        address: 'Mumbai',
+        defaultRecipientTo: [],
+        defaultRecipientCc: [],
+        nextSeq: 5,
+        numberFormat: 'INV-{YYYY}-{SEQ}',
+      },
+    };
+
+    const spec = resolveVoucherNumberSpec(config, 'acme');
+    expect(spec.format).toBe('{INITIALS}_{MMM}{YY}_{SEQ}');
+    expect(spec.seq).toBe(5);
+  });
 });

@@ -15,13 +15,10 @@ export function initialsFor(name: string): string {
     .join('');
 }
 
-export function resolveVoucherNumberSpec(
-  config: Config,
-  customerSlug?: string,
-): VoucherNumberSpec {
+export function resolveVoucherNumberSpec(config: Config, customerSlug?: string): VoucherNumberSpec {
   const customer = customerSlug ? config.customers[customerSlug] : undefined;
   return {
-    format: customer?.numberFormat ?? config.voucher.numberFormat,
+    format: config.voucher.numberFormat,
     seq: customer?.nextSeq ?? config.voucher.nextSeq,
     initials: initialsFor(config.name),
   };
