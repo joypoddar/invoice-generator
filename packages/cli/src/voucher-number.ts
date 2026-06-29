@@ -15,10 +15,14 @@ export function initialsFor(name: string): string {
     .join('');
 }
 
-export function resolveVoucherNumberSpec(config: Config): VoucherNumberSpec {
+export function resolveVoucherNumberSpec(
+  config: Config,
+  customerSlug?: string,
+): VoucherNumberSpec {
+  const customer = customerSlug ? config.customers[customerSlug] : undefined;
   return {
-    format: config.voucher.numberFormat,
-    seq: config.voucher.nextSeq,
+    format: customer?.numberFormat ?? config.voucher.numberFormat,
+    seq: customer?.nextSeq ?? config.voucher.nextSeq,
     initials: initialsFor(config.name),
   };
 }
