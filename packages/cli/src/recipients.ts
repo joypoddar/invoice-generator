@@ -8,23 +8,12 @@ export interface RecipientOverrides {
   bcc?: string[];
 }
 
-/**
- * Compose the effective recipients for a send.
- *
- * Precedence per field: CLI override (--to/--cc/--bcc) > customer default > global default.
- * Customers don't carry a bcc list, so bcc only ever resolves from override or global.
- * A slug that no longer resolves (customer was deleted) silently falls back to the global default.
- */
-export function composeRecipients(
+export function composeRecipientsForCustomerSlug(
   config: Config,
-  invoice: Invoice,
+  customerSlug: string | undefined,
   overrides: RecipientOverrides = {},
 ): Recipients {
-  const slug =
-    typeof invoice.default.customerSlug === 'string'
-      ? invoice.default.customerSlug
-      : undefined;
-  const customer = slug ? getCustomer(config, slug) : null;
+  const customer = customerSlug ? getCustomer(config, customerSlug) : null;
 
   const customerTo = customer?.defaultRecipientTo ?? [];
   const customerCc = customer?.defaultRecipientCc ?? [];
@@ -45,4 +34,21 @@ export function composeRecipients(
     cc: overrides.cc ?? defaultCc,
     bcc: overrides.bcc ?? defaultBcc,
   };
+}
+
+/**
+ * Compose the effective recipients for a send.
+ *
+ * Precedence per field: CLI override (--to/--cc/--bcc) > customer default > global default.
+ * Customers don't carry a bcc list, so bcc only ever resolves from override or global.
+ * A slug that no longer resolves (customer was deleted) silently falls back to the global default.
+ */
+export function composeRecipients(
+  config: Config,
+  invoice: Invoice,
+  overrides: RecipientOverrides = {},
+): Recipients {
+  const slug =
+    typeof invoice.default.customerSlug === 'string' ? invoice.default.customerSlug : undefined;
+  return composeRecipientsForCustomerSlug(config, slug, overrides);
 }

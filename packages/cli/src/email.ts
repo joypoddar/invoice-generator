@@ -6,8 +6,14 @@ import {
   sidecarFilenameFor,
   subjectFor,
   type Invoice,
+  type Voucher,
 } from '@invoice/shared';
-import { renderInvoiceHtml, type BrandingOpts, type RenderOpts } from '@invoice/renderer';
+import {
+  renderInvoiceHtml,
+  renderVoucherHtml,
+  type BrandingOpts,
+  type RenderOpts,
+} from '@invoice/renderer';
 
 export type { BrandingOpts, RenderOpts };
 export { renderInvoiceHtml };
@@ -56,8 +62,50 @@ export function buildMailOptions(
   return result;
 }
 
-export async function sendInvoice(
-  invoice: Invoice,
+function renderVoucherSubject(template: string, voucher: Voucher): string {
+  return template
+    .replaceAll('{voucherNumber}', voucher.voucherNumber)
+    .replaceAll('{payTo}', voucher.payTo)
+    .replaceAll('{date}', voucher.date)
+    .replaceAll('{currency}', voucher.currency)
+    .replaceAll('{title}', voucher.title);
+}
+
+function sidecarFilenameForVoucher(voucherNumber: string): string {
+  return `voucher-${voucherNumber}.json`;
+}
+
+export function buildVoucherMailOptions(
+  voucher: Voucher,
+  recipients: Recipients,
+  fromAddress: string,
+  opts: RenderOpts = {},
+): SendMailOptions {
+  const filename = sidecarFilenameForVoucher(voucher.voucherNumber);
+  const subject = opts.subjectTemplate
+    ? renderVoucherSubject(opts.subjectTemplate, voucher)
+    : `Payment Voucher ${voucher.voucherNumber} for ${voucher.payTo}`;
+
+  const result: SendMailOptions = {
+    from: fromAddress,
+    to: recipients.to.join(', '),
+    subject,
+    html: renderVoucherHtml(voucher, opts),
+    attachments: [
+      {
+        filename,
+        content: JSON.stringify(voucher, null, 2),
+        contentType: 'application/json',
+      },
+    ],
+  };
+  if (recipients.cc && recipients.cc.length > 0) result.cc = recipients.cc.join(', ');
+  if (recipients.bcc && recipients.bcc.length > 0) result.bcc = recipients.bcc.join(', ');
+  return result;
+}
+
+export async function sendVoucher(
+  voucher: Voucher,
   recipients: Recipients,
   smtp: SmtpConfig,
   password: string,
@@ -69,6 +117,6 @@ export async function sendInvoice(
     secure: smtp.secure ?? smtp.port === 465,
     auth: { user: smtp.user, pass: password },
   });
-  const mail = buildMailOptions(invoice, recipients, smtp.user, opts);
+  const mail = buildVoucherMailOptions(voucher, recipients, smtp.user, opts);
   await transporter.sendMail(mail);
 }

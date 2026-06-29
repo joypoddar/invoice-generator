@@ -24,6 +24,9 @@ import {
 } from '../customers.js';
 import { setupCustomer } from './init.js';
 import { resolveVoucherNumberSpec } from '../voucher-number.js';
+import { getPassword, SMTP_PASSWORD_ACCOUNT } from '../secrets.js';
+import { buildVoucherMailOptions, sendVoucher, type Recipients } from '../email.js';
+import { composeRecipientsForCustomerSlug } from '../recipients.js';
 
 const DRAFT = 'voucher-new';
 
@@ -66,6 +69,17 @@ export function register(program: Command): void {
     .action(runNew);
 
   voucher.command('list').description('List saved payment vouchers').action(runList);
+
+  voucher
+    .command('send [id]')
+    .description('Email a payment voucher')
+    .option('--last', 'send the most recently-created voucher')
+    .option('--to <email...>', 'override recipients (replaces config)')
+    .option('--cc <email...>', 'override cc recipients')
+    .option('--bcc <email...>', 'override bcc recipients')
+    .option('--subject <text>', 'override the subject line for this send')
+    .option('-y, --yes', 'skip the confirmation prompt')
+    .action(runSend);
 
   voucher
     .command('print [id]')
@@ -282,6 +296,130 @@ async function runNew(opts: NewOptions): Promise<void> {
   console.log(`  pay to:  ${payTo}`);
   console.log(`  total:   ${formatCurrency(voucherTotal(voucher), currency)}`);
   console.log(`\nPrint it with \`invoice voucher print ${voucher.id}\`.`);
+}
+
+async function runSend(id: string | undefined, opts: VoucherSendOptions): Promise<void> {
+  const config = loadConfigSafe();
+  if (!config) {
+    console.error('Not configured. Run `invoice init` first.');
+    process.exit(1);
+  }
+
+  if (!opts.last && !id) {
+    console.error('Pass a voucher id (or use --last to send the most recent voucher).');
+    process.exit(1);
+  }
+  if (opts.last && id) {
+    console.error('Pass either an id or --last, not both.');
+    process.exit(1);
+  }
+
+  const store = new SqliteStore(dbPath());
+  let voucher: Voucher;
+  try {
+    if (opts.last) {
+      const all = store.listVouchers();
+      if (all.length === 0) {
+        console.error('No vouchers found. Create one with `invoice voucher new`.');
+        process.exit(1);
+      }
+      voucher = all[0]!;
+    } else {
+      const match = resolveVoucher(store.listVouchers(), id as string);
+      if (!match) {
+        console.error(`No voucher matching "${id}".`);
+        process.exit(1);
+      }
+      voucher = match;
+    }
+  } finally {
+    store.close();
+  }
+
+  const status = await performVoucherSend(config, voucher, opts);
+  if (status === 'error') process.exit(1);
+}
+
+interface VoucherSendOptions {
+  to?: string[];
+  cc?: string[];
+  bcc?: string[];
+  subject?: string;
+  yes?: boolean;
+  last?: boolean;
+}
+
+export type VoucherSendStatus = 'sent' | 'aborted' | 'error';
+
+async function performVoucherSend(
+  config: Config,
+  voucher: Voucher,
+  opts: VoucherSendOptions,
+): Promise<VoucherSendStatus> {
+  if (!config.smtp) {
+    console.error(
+      "Sending isn't configured for this install. Run `invoice setup smtp` to enable sending.",
+    );
+    return 'error';
+  }
+
+  const password = getPassword(SMTP_PASSWORD_ACCOUNT);
+  if (!password) {
+    console.error('SMTP password not in keychain. Run `invoice setup smtp` to set it.');
+    return 'error';
+  }
+
+  const recipients = composeRecipientsForCustomerSlug(config, voucher.customerSlug, opts);
+  if (recipients.to.length === 0) {
+    console.error(
+      'No recipients in `to` (pass --to or set `mail.recipients.to` in config or save them on the billed-to customer).',
+    );
+    return 'error';
+  }
+
+  printVoucherSummary(voucher, recipients, config.smtp.user);
+
+  const shouldConfirm = !opts.yes && config.cli.confirmBeforeSend;
+  if (shouldConfirm) {
+    const ok = await confirm({ message: 'Send?', default: false });
+    if (!ok) {
+      console.log('Aborted.');
+      return 'aborted';
+    }
+  }
+
+  console.log('Sending…');
+  await sendVoucher(
+    voucher,
+    recipients,
+    { host: config.smtp.host, port: config.smtp.port, user: config.smtp.user },
+    password,
+    {
+      branding: {
+        ...config.branding,
+        signatoryLabel: config.branding.signatoryLabel,
+      },
+      dateFormat: config.invoice.dateFormat,
+      currencyFormat: config.invoice.currencyFormat,
+      subjectTemplate: opts.subject,
+    },
+  );
+
+  console.log(`Sent. ${voucher.voucherNumber} → ${recipients.to.join(', ')}`);
+  return 'sent';
+}
+
+function printVoucherSummary(voucher: Voucher, recipients: Recipients, fromAddress: string): void {
+  const total = voucherTotal(voucher).toFixed(2);
+  const currency = String(voucher.currency ?? '');
+  console.log(`\nVoucher ${voucher.voucherNumber} — ${voucher.payTo} — ${total} ${currency}`);
+  console.log(`  From: ${fromAddress}`);
+  console.log(`  To:   ${recipients.to.join(', ')}`);
+  if (recipients.cc && recipients.cc.length > 0) console.log(`  Cc:   ${recipients.cc.join(', ')}`);
+  if (recipients.bcc && recipients.bcc.length > 0)
+    console.log(`  Bcc:  ${recipients.bcc.join(', ')}`);
+  console.log(`  Body: HTML voucher summary + JSON sidecar attachment`);
+  console.log('');
 }
 
 async function runList(): Promise<void> {
