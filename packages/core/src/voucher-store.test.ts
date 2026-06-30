@@ -58,4 +58,15 @@ describe('SqliteStore vouchers', () => {
     expect(store.getVoucher('v1')).toBeNull();
     expect(store.deleteVoucher('v1')).toBe(false);
   });
+
+  it('voucher watermark round-trips and is independent of the invoice watermark', () => {
+    expect(store.getVoucherLastUid()).toBe(0);
+    store.setVoucherLastUid(42);
+    expect(store.getVoucherLastUid()).toBe(42);
+
+    // Setting the invoice watermark must not move the voucher watermark, and vice versa.
+    store.setLastUid(99);
+    expect(store.getVoucherLastUid()).toBe(42);
+    expect(store.getLastUid()).toBe(99);
+  });
 });

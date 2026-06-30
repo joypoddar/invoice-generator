@@ -3,6 +3,7 @@ import type { Command } from 'commander';
 import { confirm, input, select } from '@inquirer/prompts';
 import open from 'open';
 import {
+  prepareVoucherClone,
   renderVoucherNumber,
   voucherTotal,
   voucherPaymentStatus,
@@ -10,7 +11,7 @@ import {
   type Voucher,
   type VoucherLine,
 } from '@invoice/shared';
-import { SqliteStore } from '@invoice/core';
+import { connect, ingestVouchers, SqliteStore } from '@invoice/core';
 import { startServer } from '@invoice/dashboard';
 import { formatCurrency } from '@invoice/renderer';
 import { dbPath, loadConfigSafe, saveConfig } from '../store.js';
@@ -25,7 +26,7 @@ import {
 } from '../customers.js';
 import { setupCustomer } from './init.js';
 import { resolveVoucherNumberSpec } from '../voucher-number.js';
-import { getPassword, SMTP_PASSWORD_ACCOUNT } from '../secrets.js';
+import { getPassword, IMAP_PASSWORD_ACCOUNT, SMTP_PASSWORD_ACCOUNT } from '../secrets.js';
 import { sendVoucher, type Recipients } from '../email.js';
 import { composeRecipientsForCustomerSlug } from '../recipients.js';
 
@@ -86,6 +87,33 @@ export function register(program: Command): void {
     .option('--subject <text>', 'override the subject line for this send')
     .option('-y, --yes', 'skip the confirmation prompt')
     .action(runSend);
+
+  voucher
+    .command('clone <id>')
+    .description('Duplicate a voucher as a fresh draft (new id/number/date)')
+    .option('--send', 'send the new voucher immediately after creating it')
+    .option('-y, --yes', 'skip the send confirmation prompt (only meaningful with --send)')
+    .option('--to <email...>', 'override recipients for the chained send')
+    .option('--cc <email...>', 'override cc recipients for the chained send')
+    .option('--bcc <email...>', 'override bcc recipients for the chained send')
+    .option('--subject <text>', 'override subject template for the chained send')
+    .action(runClone);
+
+  voucher
+    .command('resend <id>')
+    .description('Re-send an already-sent voucher (updates sentAt + recipients)')
+    .option('--to <email...>', 'override recipients for this send')
+    .option('--cc <email...>', 'override cc recipients')
+    .option('--bcc <email...>', 'override bcc recipients')
+    .option('--subject <text>', 'override subject template for this send')
+    .option('-y, --yes', 'skip the confirmation prompt')
+    .action(runResend);
+
+  voucher
+    .command('sync')
+    .description('Pull sent vouchers back from the configured IMAP folder into the local DB')
+    .option('--backfill', 'ignore the watermark and fetch every matching message')
+    .action(runVoucherSync);
 
   voucher
     .command('print [id]')
@@ -580,6 +608,165 @@ async function runVoucherMark(id: string, status: string): Promise<void> {
     }
     store.upsertVoucher(markVoucher(voucher, status));
     console.log(`Marked voucher ${voucher.voucherNumber} as ${status}.`);
+  } finally {
+    store.close();
+  }
+}
+
+interface VoucherCloneOptions {
+  send?: boolean;
+  yes?: boolean;
+  to?: string[];
+  cc?: string[];
+  bcc?: string[];
+  subject?: string;
+}
+
+async function runClone(sourceId: string, opts: VoucherCloneOptions): Promise<void> {
+  const config = loadConfigSafe();
+  if (!config) {
+    console.error('Not configured. Run `invoice init` first.');
+    process.exit(1);
+  }
+
+  const store = new SqliteStore(dbPath());
+  let sendStatus: VoucherSendStatus | null = null;
+  try {
+    const source = resolveVoucher(store.listVouchers(), sourceId);
+    if (!source) {
+      console.error(`No voucher matching "${sourceId}".`);
+      process.exit(1);
+    }
+
+    const slug = source.customerSlug;
+    const spec = resolveVoucherNumberSpec(config, slug);
+    const today = toIsoDate(new Date());
+    const voucherNumber = renderVoucherNumber(
+      spec.format,
+      spec.seq,
+      new Date(today),
+      spec.initials,
+    );
+    const cloned = prepareVoucherClone(source, {
+      id: randomUUID(),
+      voucherNumber,
+      date: today,
+      createdAt: new Date().toISOString(),
+    });
+    store.upsertVoucher(cloned);
+
+    const updatedConfig: Config =
+      slug && config.customers[slug]
+        ? bumpCustomerSeq(config, slug)
+        : { ...config, voucher: { ...config.voucher, nextSeq: config.voucher.nextSeq + 1 } };
+    saveConfig(updatedConfig);
+
+    console.log(
+      `Cloned ${source.voucherNumber} → ${cloned.voucherNumber} (draft ${cloned.id.slice(0, 8)}).`,
+    );
+
+    if (opts.send) {
+      sendStatus = await performVoucherSend(updatedConfig, store, cloned, opts);
+    } else {
+      console.log(`Send it with \`invoice voucher send ${cloned.id.slice(0, 8)}\`.`);
+    }
+  } finally {
+    store.close();
+  }
+
+  if (sendStatus === 'error') process.exit(1);
+}
+
+interface VoucherResendOptions {
+  to?: string[];
+  cc?: string[];
+  bcc?: string[];
+  subject?: string;
+  yes?: boolean;
+}
+
+async function runResend(id: string, opts: VoucherResendOptions): Promise<void> {
+  const config = loadConfigSafe();
+  if (!config) {
+    console.error('Not configured. Run `invoice init` first.');
+    process.exit(1);
+  }
+
+  const store = new SqliteStore(dbPath());
+  try {
+    const voucher = resolveVoucher(store.listVouchers(), id);
+    if (!voucher) {
+      console.error(`No voucher matching "${id}".`);
+      process.exit(1);
+    }
+    if (voucher.status !== 'sent') {
+      console.error(
+        `Voucher ${voucher.voucherNumber} hasn't been sent yet. Use \`invoice voucher send ${voucher.id.slice(0, 8)}\`.`,
+      );
+      process.exit(1);
+    }
+    if (voucher.sentAt) {
+      const who = voucher.recipients ? ` to ${voucher.recipients.to.join(', ')}` : '';
+      console.log(`Last sent ${voucher.sentAt}${who}.`);
+    }
+
+    // Hand performVoucherSend a draft-shaped clone so its already-sent guard
+    // (if any) doesn't bail; the upsert overwrites the row with new sent state.
+    const asDraft: Voucher = { ...voucher, status: 'draft' };
+    const status = await performVoucherSend(config, store, asDraft, opts);
+    if (status === 'error') process.exit(1);
+  } finally {
+    store.close();
+  }
+}
+
+interface VoucherSyncOptions {
+  backfill?: boolean;
+}
+
+async function runVoucherSync(opts: VoucherSyncOptions): Promise<void> {
+  const config = loadConfigSafe();
+  if (!config) {
+    console.error('Not configured. Run `invoice init` first.');
+    process.exit(1);
+  }
+
+  const password = getPassword(IMAP_PASSWORD_ACCOUNT);
+  if (!password) {
+    console.error('IMAP password not in keychain. Run `invoice init` to set it.');
+    process.exit(1);
+  }
+
+  const store = new SqliteStore(dbPath());
+  try {
+    const lastUid = opts.backfill ? 0 : store.getVoucherLastUid();
+    console.log(
+      `Syncing vouchers from "${config.imap.folder}" (${opts.backfill ? 'backfill' : `since uid ${lastUid}`})…`,
+    );
+
+    const client = await connect(
+      { host: config.imap.host, port: config.imap.port, user: config.imap.user },
+      password,
+    );
+    try {
+      const result = await ingestVouchers(store, client, config.imap.folder, lastUid);
+      if (result.newLastUid > lastUid) {
+        store.setVoucherLastUid(result.newLastUid);
+      }
+      const detail =
+        result.fetchedCount === result.newCount
+          ? `${result.newCount} new`
+          : `${result.newCount} new, ${result.fetchedCount - result.newCount} re-ingested`;
+      console.log(
+        `Processed ${result.fetchedCount} voucher(s) (${detail}). Watermark: uid ${result.newLastUid}.`,
+      );
+    } finally {
+      try {
+        await client.logout();
+      } catch {
+        /* ignore */
+      }
+    }
   } finally {
     store.close();
   }

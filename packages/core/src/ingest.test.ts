@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import type { ImapFlow } from 'imapflow';
-import type { Invoice } from '@invoice/shared';
-import { ingest, parseSidecar } from './ingest.js';
+import type { Invoice, Voucher } from '@invoice/shared';
+import { ingest, ingestVouchers, parseSidecar, parseVoucherSidecar } from './ingest.js';
 import { SqliteStore } from './sqlite-store.js';
 import type { FetchedMessage } from './imap.js';
 
@@ -32,7 +32,10 @@ function makeInvoice(): Invoice {
  * Build a raw multipart/mixed RFC 822 message with the X-Invoice-Generator
  * header and a JSON sidecar attachment.
  */
-function buildEmail(invoice: Invoice, overrides: { skipHeader?: boolean; sidecarName?: string } = {}): Buffer {
+function buildEmail(
+  invoice: Invoice,
+  overrides: { skipHeader?: boolean; sidecarName?: string } = {},
+): Buffer {
   const json = JSON.stringify(invoice);
   const boundary = `b-${Math.random().toString(36).slice(2)}`;
   const filename = overrides.sidecarName ?? `invoice-${String(invoice.default.invoiceNumber)}.json`;
@@ -60,7 +63,11 @@ function buildEmail(invoice: Invoice, overrides: { skipHeader?: boolean; sidecar
   return Buffer.from([...headerLines, ...bodyLines].join('\r\n'));
 }
 
-function makeMessage(uid: number, invoice: Invoice, opts?: { skipHeader?: boolean; sidecarName?: string }): FetchedMessage {
+function makeMessage(
+  uid: number,
+  invoice: Invoice,
+  opts?: { skipHeader?: boolean; sidecarName?: string },
+): FetchedMessage {
   return { uid, source: buildEmail(invoice, opts) };
 }
 
@@ -175,6 +182,133 @@ describe('ingest', () => {
     await ingest(store, client, 'Sent', 0); // simulate a re-sync of the same UID
 
     expect(await store.count()).toBe(1);
+    store.close();
+  });
+});
+
+function makeVoucher(): Voucher {
+  return {
+    id: randomUUID(),
+    voucherNumber: 'JP_May26_01',
+    title: 'Employee Payment Voucher',
+    payTo: 'Github Copilot',
+    date: '2026-05-07',
+    currency: 'INR',
+    lines: [{ paymentMethod: 'Credit Card', description: 'Subscription', amount: 186 }],
+    preparedBy: 'Joy Poddar',
+    receivedBy: 'Joy Poddar',
+    createdAt: '2026-05-07T00:00:00.000Z',
+    status: 'sent',
+    sentAt: '2026-05-07T12:00:00.000Z',
+    paymentStatus: 'unpaid',
+  };
+}
+
+function buildVoucherEmail(
+  voucher: Voucher,
+  overrides: { skipHeader?: boolean; sidecarName?: string } = {},
+): Buffer {
+  const json = JSON.stringify(voucher);
+  const boundary = `b-${Math.random().toString(36).slice(2)}`;
+  const filename = overrides.sidecarName ?? `voucher-${voucher.voucherNumber}.json`;
+  const headerLines = [
+    'From: joy@creowis.com',
+    'To: hello@creowis.com',
+    `Subject: Payment Voucher ${voucher.voucherNumber}`,
+    'MIME-Version: 1.0',
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+  ];
+  if (!overrides.skipHeader) headerLines.push('X-Voucher-Generator: 1');
+  const bodyLines = [
+    '',
+    `--${boundary}`,
+    'Content-Type: text/html; charset=utf-8',
+    '',
+    '<html><body>Voucher</body></html>',
+    `--${boundary}`,
+    `Content-Type: application/json; name="${filename}"`,
+    `Content-Disposition: attachment; filename="${filename}"`,
+    '',
+    json,
+    `--${boundary}--`,
+  ];
+  return Buffer.from([...headerLines, ...bodyLines].join('\r\n'));
+}
+
+function makeVoucherMessage(
+  uid: number,
+  voucher: Voucher,
+  opts?: { skipHeader?: boolean; sidecarName?: string },
+): FetchedMessage {
+  return { uid, source: buildVoucherEmail(voucher, opts) };
+}
+
+describe('parseVoucherSidecar', () => {
+  it('extracts the Voucher from a well-formed message', async () => {
+    const v = makeVoucher();
+    const parsed = await parseVoucherSidecar(makeVoucherMessage(1, v));
+    expect(parsed).toEqual(v);
+  });
+
+  it('returns null when X-Voucher-Generator header is missing', async () => {
+    const parsed = await parseVoucherSidecar(
+      makeVoucherMessage(1, makeVoucher(), { skipHeader: true }),
+    );
+    expect(parsed).toBeNull();
+  });
+
+  it('returns null when no voucher-*.json attachment is present', async () => {
+    const parsed = await parseVoucherSidecar(
+      makeVoucherMessage(1, makeVoucher(), { sidecarName: 'invoice-INV-1.json' }),
+    );
+    expect(parsed).toBeNull();
+  });
+});
+
+describe('ingestVouchers', () => {
+  it('upserts each matching voucher and reports the right counts', async () => {
+    const store = new SqliteStore(':memory:');
+    const v1 = makeVoucher();
+    const v2 = makeVoucher();
+    const client = createMockClient([makeVoucherMessage(100, v1), makeVoucherMessage(101, v2)]);
+
+    const result = await ingestVouchers(store, client, 'Sent', 0);
+
+    expect(result.fetchedCount).toBe(2);
+    expect(result.newCount).toBe(2);
+    expect(result.newLastUid).toBe(101);
+    expect(store.listVouchers()).toHaveLength(2);
+    expect(store.getVoucher(v1.id)).toEqual(v1);
+    store.close();
+  });
+
+  it('counts re-ingested vouchers as fetched but not new', async () => {
+    const store = new SqliteStore(':memory:');
+    const v = makeVoucher();
+    const client = createMockClient([makeVoucherMessage(200, v)]);
+
+    const first = await ingestVouchers(store, client, 'Sent', 0);
+    expect(first.newCount).toBe(1);
+
+    const second = await ingestVouchers(store, client, 'Sent', 0);
+    expect(second.fetchedCount).toBe(1);
+    expect(second.newCount).toBe(0);
+    expect(store.listVouchers()).toHaveLength(1);
+    store.close();
+  });
+
+  it('does not advance the watermark past a voucher with no sidecar', async () => {
+    const store = new SqliteStore(':memory:');
+    const good = makeVoucher();
+    const bad = makeVoucher();
+    const client = createMockClient([
+      makeVoucherMessage(50, good),
+      makeVoucherMessage(51, bad, { sidecarName: 'nope.txt' }),
+    ]);
+
+    const result = await ingestVouchers(store, client, 'Sent', 0);
+    expect(result.fetchedCount).toBe(1);
+    expect(result.newLastUid).toBe(50);
     store.close();
   });
 });

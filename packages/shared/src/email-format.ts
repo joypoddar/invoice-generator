@@ -3,6 +3,9 @@ import { totalFor, type Invoice } from './invoice.js';
 export const INVOICE_HEADER_NAME = 'X-Invoice-Generator';
 export const INVOICE_HEADER_VALUE = '1';
 
+export const VOUCHER_HEADER_NAME = 'X-Voucher-Generator';
+export const VOUCHER_HEADER_VALUE = '1';
+
 /** The built-in default subject when neither config nor --subject sets a template. */
 export function subjectFor(invoice: Invoice): string {
   const number = invoice.default.invoiceNumber as string;
@@ -48,6 +51,10 @@ export function renderSubject(template: string, invoice: Invoice): string {
 
 export function sidecarFilenameFor(invoiceNumber: string): string {
   return `invoice-${invoiceNumber}.json`;
+}
+
+export function sidecarFilenameForVoucher(voucherNumber: string): string {
+  return `voucher-${voucherNumber}.json`;
 }
 
 function stringOrEmpty(v: unknown): string {

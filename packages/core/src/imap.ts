@@ -1,4 +1,5 @@
 import { ImapFlow } from 'imapflow';
+import { INVOICE_HEADER_NAME, INVOICE_HEADER_VALUE } from '@invoice/shared';
 
 export interface ImapConfig {
   host: string;
@@ -43,6 +44,8 @@ export async function* fetchSince(
   client: ImapFlow,
   folder: string,
   lastUid: number,
+  headerName: string = INVOICE_HEADER_NAME,
+  headerValue: string = INVOICE_HEADER_VALUE,
 ): AsyncIterable<FetchedMessage> {
   const lock = await client.getMailboxLock(folder);
   try {
@@ -50,7 +53,7 @@ export async function* fetchSince(
     const uids = await client.search(
       {
         uid: `${minUid}:*`,
-        header: { 'X-Invoice-Generator': '1' },
+        header: { [headerName]: headerValue },
       },
       { uid: true },
     );

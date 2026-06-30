@@ -5,8 +5,11 @@ import { basename } from 'node:path';
 import {
   INVOICE_HEADER_NAME,
   INVOICE_HEADER_VALUE,
+  VOUCHER_HEADER_NAME,
+  VOUCHER_HEADER_VALUE,
   renderSubject,
   sidecarFilenameFor,
+  sidecarFilenameForVoucher,
   subjectFor,
   type Invoice,
   type Voucher,
@@ -106,10 +109,6 @@ function renderVoucherSubject(template: string, voucher: Voucher): string {
     .replaceAll('{title}', voucher.title);
 }
 
-function sidecarFilenameForVoucher(voucherNumber: string): string {
-  return `voucher-${voucherNumber}.json`;
-}
-
 export function buildVoucherMailOptions(
   voucher: Voucher,
   recipients: Recipients,
@@ -133,6 +132,9 @@ export function buildVoucherMailOptions(
         contentType: 'application/json',
       },
     ],
+    headers: {
+      [VOUCHER_HEADER_NAME]: VOUCHER_HEADER_VALUE,
+    },
   };
   if (recipients.cc && recipients.cc.length > 0) result.cc = recipients.cc.join(', ');
   if (recipients.bcc && recipients.bcc.length > 0) result.bcc = recipients.bcc.join(', ');

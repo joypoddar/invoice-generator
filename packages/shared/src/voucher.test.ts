@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  prepareVoucherClone,
   renderVoucherNumber,
   voucherPaymentStatus,
   voucherTotal,
@@ -71,5 +72,47 @@ describe('voucherPaymentStatus', () => {
   it('returns the stored status when set', () => {
     expect(voucherPaymentStatus(makeVoucher({ paymentStatus: 'paid' }))).toBe('paid');
     expect(voucherPaymentStatus(makeVoucher({ paymentStatus: 'unpaid' }))).toBe('unpaid');
+  });
+});
+
+describe('prepareVoucherClone', () => {
+  const source = makeVoucher({
+    status: 'sent',
+    sentAt: '2026-05-07T12:00:00.000Z',
+    recipients: { to: ['a@example.com'] },
+    paymentStatus: 'paid',
+    paidAt: '2026-05-08T00:00:00.000Z',
+    customerSlug: 'github',
+    notes: 'thanks',
+  });
+  const clone = prepareVoucherClone(source, {
+    id: 'v2',
+    voucherNumber: 'JP_May26_02',
+    date: '2026-06-30',
+    createdAt: '2026-06-30T00:00:00.000Z',
+  });
+
+  it('replaces identity (id, number, date, createdAt)', () => {
+    expect(clone.id).toBe('v2');
+    expect(clone.voucherNumber).toBe('JP_May26_02');
+    expect(clone.date).toBe('2026-06-30');
+    expect(clone.createdAt).toBe('2026-06-30T00:00:00.000Z');
+  });
+
+  it('resets send + payment state to a fresh draft', () => {
+    expect(clone.status).toBe('draft');
+    expect(clone.paymentStatus).toBe('unpaid');
+    expect(clone.sentAt).toBeUndefined();
+    expect(clone.recipients).toBeUndefined();
+    expect(clone.paidAt).toBeUndefined();
+  });
+
+  it('preserves payee, customer link, lines, signatories and notes', () => {
+    expect(clone.payTo).toBe(source.payTo);
+    expect(clone.customerSlug).toBe('github');
+    expect(clone.lines).toEqual(source.lines);
+    expect(clone.preparedBy).toBe(source.preparedBy);
+    expect(clone.receivedBy).toBe(source.receivedBy);
+    expect(clone.notes).toBe('thanks');
   });
 });

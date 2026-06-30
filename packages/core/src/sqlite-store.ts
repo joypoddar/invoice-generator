@@ -1,5 +1,11 @@
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
-import { hasCustomFields, totalFor, voucherTotal, type Invoice, type Voucher } from '@invoice/shared';
+import {
+  hasCustomFields,
+  totalFor,
+  voucherTotal,
+  type Invoice,
+  type Voucher,
+} from '@invoice/shared';
 import type {
   AggregateResult,
   AggregateSpec,
@@ -58,6 +64,11 @@ CREATE TABLE IF NOT EXISTS vouchers (
   total REAL,
   created_at TEXT NOT NULL,
   raw_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS voucher_sync_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  last_uid INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_invoices_due_date ON invoices(due_date);
@@ -235,9 +246,7 @@ export class SqliteStore implements InvoiceStore {
 
   updateRecurringRun(id: string, nextRun: string, lastRun: string): void {
     this.db
-      .prepare(
-        'UPDATE recurring_invoices SET next_run = :next, last_run = :last WHERE id = :id',
-      )
+      .prepare('UPDATE recurring_invoices SET next_run = :next, last_run = :last WHERE id = :id')
       .run({ next: nextRun, last: lastRun, id });
   }
 
@@ -306,6 +315,25 @@ export class SqliteStore implements InvoiceStore {
   deleteVoucher(id: string): boolean {
     const result = this.db.prepare('DELETE FROM vouchers WHERE id = ?').run(id);
     return result.changes > 0;
+  }
+
+  // Voucher sync watermark — independent of the invoice `sync_state` watermark so
+  // `voucher sync` (filtering on X-Voucher-Generator) never clobbers `invoice sync`
+  // even when both read the same IMAP folder.
+  getVoucherLastUid(): number {
+    const row = this.db.prepare('SELECT last_uid FROM voucher_sync_state WHERE id = 1').get() as
+      | { last_uid: number | null }
+      | undefined;
+    return row?.last_uid ?? 0;
+  }
+
+  setVoucherLastUid(uid: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO voucher_sync_state (id, last_uid) VALUES (1, :uid)
+         ON CONFLICT(id) DO UPDATE SET last_uid = :uid`,
+      )
+      .run({ uid });
   }
 
   close(): void {

@@ -107,3 +107,37 @@ export function voucherTotal(v: Voucher): number {
 export function voucherPaymentStatus(v: Voucher): 'paid' | 'unpaid' {
   return v.paymentStatus ?? 'unpaid';
 }
+
+export interface VoucherCloneOverrides {
+  id: string;
+  voucherNumber: string;
+  /** ISO yyyy-mm-dd. */
+  date: string;
+  createdAt: string;
+}
+
+/**
+ * Duplicate a voucher as a fresh draft. Payee/customer/lines/company/signatories
+ * /notes are preserved; identity (id, number, date) is replaced; send + payment
+ * state is reset. Mirrors `prepareClone` for invoices.
+ */
+export function prepareVoucherClone(source: Voucher, overrides: VoucherCloneOverrides): Voucher {
+  return {
+    id: overrides.id,
+    voucherNumber: overrides.voucherNumber,
+    title: source.title,
+    payTo: source.payTo,
+    ...(source.customerSlug ? { customerSlug: source.customerSlug } : {}),
+    date: overrides.date,
+    currency: source.currency,
+    lines: source.lines.map((l) => ({ ...l })),
+    ...(source.companyName ? { companyName: source.companyName } : {}),
+    ...(source.companyAddress ? { companyAddress: source.companyAddress } : {}),
+    preparedBy: source.preparedBy,
+    receivedBy: source.receivedBy,
+    ...(source.notes ? { notes: source.notes } : {}),
+    createdAt: overrides.createdAt,
+    status: 'draft',
+    paymentStatus: 'unpaid',
+  };
+}
