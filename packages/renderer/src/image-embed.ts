@@ -30,7 +30,13 @@ export function resolveImageSrc(urlOrPath: string): string | null {
               ? 'image/webp'
               : 'image/png';
     return `data:${mime};base64,${buf.toString('base64')}`;
-  } catch {
+  } catch (err) {
+    // Previously failed silently — a missing/unreadable logo path produced
+    // an empty banner with no diagnostic anywhere. Warn so this is visible
+    // in CLI output and dashboard server logs instead of disappearing.
+    console.warn(
+      `[invoice] Could not read image at "${path}" — omitting from output. (${(err as Error).message})`,
+    );
     return null;
   }
 }

@@ -72,10 +72,17 @@ export function renderVoucherCard(voucher: Voucher, opts: RenderOpts = {}): stri
               font-family:${fontFamily}; color:#1a1a1a;">
 
     <!-- ── Header banner ── -->
-    <div style="background:${BANNER_BG}; color:#fff; padding:22px 28px;
-                display:flex; align-items:center; justify-content:space-between; gap:24px;">
-      <div>${logoBlock}</div>
-      <div style="text-align:right;">${companyBlock}</div>
+    <div style="background:${BANNER_BG}; background-color:${BANNER_BG}; color:#fff; padding:22px 28px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+        <tr>
+          <td width="1%" valign="middle" style="vertical-align:middle;">
+            ${logoBlock}
+          </td>
+          <td width="99%" valign="middle" align="right" style="vertical-align:middle; text-align:right; padding-left:24px;">
+            ${companyBlock}
+          </td>
+        </tr>
+      </table>
     </div>
 
     <!-- ── Body ── -->
@@ -124,18 +131,14 @@ export function renderVoucherCard(voucher: Voucher, opts: RenderOpts = {}): stri
 
       <!-- ── Amount in words ── -->
       <p style="margin:0 0 8px; font-size:14px;">
-        <span style="font-weight:700;">Amount in Words:</span> ${escapeHtml(amountToWords(total, currency))}
+        <span style="font-weight:700;">Amount in Words:</span>
+        <span style="text-decoration:underline; text-decoration-thickness:1px; text-decoration-color:#333; text-underline-offset:2px; padding:0 2px;">${escapeHtml(amountToWords(total, currency))}</span>
       </p>
       ${
         voucher.notes
           ? `<p style="margin:14px 0 0; font-size:13px; color:#555; font-style:italic;">${escapeHtml(voucher.notes).replace(/\n/g, '<br/>')}</p>`
           : ''
       }
-
-      <!-- ── Signature rule ── -->
-      <div style="margin:52px 0 0; text-align:center;">
-        <span style="border-bottom:1px solid #333; display:inline-block; width:55%; padding-bottom:4px;">&nbsp;</span>
-      </div>
 
       <!-- ── Prepared / Received ── -->
       <table style="width:100%; border-collapse:collapse; margin-top:40px; font-size:14px;">

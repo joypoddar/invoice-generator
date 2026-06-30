@@ -42,10 +42,12 @@ describe('renderVoucherCard', () => {
     expect(html).toContain('Total');
   });
 
-  it('renders the amount in words', () => {
+  it('renders the amount in words with an underline', () => {
     const html = renderVoucherCard(makeVoucher());
     expect(html).toContain('Amount in Words:');
     expect(html).toContain('Rupees One hundred and eighty six only.');
+    expect(html).toContain('text-decoration:underline');
+    expect(html).not.toContain('border-bottom:1px solid #333; padding:0 2px;');
   });
 
   it('renders prepared-by and received-by', () => {
