@@ -12,7 +12,7 @@ const MIN_ROWS = 5;
 const CELL = 'border:1px solid #333; padding:9px 12px; font-size:13px;';
 
 /** Extra print rules so the voucher card fills the page (PRINT_CSS only targets .invoice-card). */
-const VOUCHER_PRINT_EXTRA = `
+export const VOUCHER_PRINT_EXTRA = `
     @media print {
       .voucher-card { box-shadow:none !important; border:none !important; border-radius:0 !important; margin:0 !important; max-width:100% !important; }
     }`;

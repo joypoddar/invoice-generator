@@ -8,6 +8,7 @@ import { renderInvoiceListPage } from './views/invoice-list.js';
 import { BATCH_CAP, renderInvoiceBatchPage } from './views/invoice-batch.js';
 import { renderVoucherDetailPage } from './views/voucher-detail.js';
 import { renderVoucherListPage } from './views/voucher-list.js';
+import { renderVoucherBatchPage } from './views/voucher-batch.js';
 
 export interface StartServerResult {
   /** Stop the server. Returns when the underlying socket is closed. */
@@ -114,6 +115,38 @@ export function startServer(opts: StartServerOptions): StartServerResult {
       store.close();
     }
     return c.html(renderVoucherListPage(vouchers));
+  });
+
+  // Registered BEFORE `/vouchers/:id` so Hono matches `/vouchers/print` first.
+  app.get('/vouchers/print', async (c) => {
+    const idsParam = c.req.query('ids') ?? '';
+    const requested = idsParam
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (requested.length === 0) {
+      return c.html(noSelectionPage(), 404);
+    }
+    const capped = requested.slice(0, BATCH_CAP);
+    const store = new SqliteStore(opts.dbPath);
+    const vouchers: Voucher[] = [];
+    try {
+      for (const id of capped) {
+        const v = store.getVoucher(id);
+        if (v) vouchers.push(v);
+      }
+    } finally {
+      store.close();
+    }
+    if (vouchers.length === 0) {
+      return c.html(noSelectionPage(), 404);
+    }
+    return c.html(
+      renderVoucherBatchPage(vouchers, {
+        localUserName: opts.localUserName ?? '',
+        renderOpts: opts.renderOpts,
+      }),
+    );
   });
 
   app.get('/vouchers/:id', async (c) => {
