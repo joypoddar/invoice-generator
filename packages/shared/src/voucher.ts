@@ -26,6 +26,16 @@ export interface Voucher {
   notes?: string;
   /** ISO timestamp the voucher was created. */
   createdAt: string;
+  /** Send lifecycle. Absent on pre-status-tracking rows; treat as 'draft'. */
+  status?: 'draft' | 'sent';
+  /** ISO timestamp the voucher was emailed. */
+  sentAt?: string;
+  /** Snapshot of who it was emailed to. */
+  recipients?: { to: string[]; cc?: string[]; bcc?: string[] };
+  /** Whether the payout has been disbursed. Absent on old rows; treat as 'unpaid'. */
+  paymentStatus?: 'paid' | 'unpaid';
+  /** ISO timestamp the payout was marked paid. */
+  paidAt?: string;
 }
 
 const SEQ_PAD = 2;
@@ -91,4 +101,9 @@ export function renderVoucherNumber(
 
 export function voucherTotal(v: Voucher): number {
   return v.lines.reduce((sum, l) => sum + l.amount, 0);
+}
+
+/** Read-time default so pre-status-tracking vouchers report as unpaid. */
+export function voucherPaymentStatus(v: Voucher): 'paid' | 'unpaid' {
+  return v.paymentStatus ?? 'unpaid';
 }

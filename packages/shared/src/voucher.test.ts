@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { renderVoucherNumber, voucherTotal, type Voucher } from './voucher.js';
+import {
+  renderVoucherNumber,
+  voucherPaymentStatus,
+  voucherTotal,
+  type Voucher,
+} from './voucher.js';
 
 function makeVoucher(overrides: Partial<Voucher> = {}): Voucher {
   return {
@@ -55,5 +60,16 @@ describe('voucherTotal', () => {
 
   it('returns 0 with no lines', () => {
     expect(voucherTotal(makeVoucher({ lines: [] }))).toBe(0);
+  });
+});
+
+describe('voucherPaymentStatus', () => {
+  it('defaults to unpaid when absent (pre-status-tracking rows)', () => {
+    expect(voucherPaymentStatus(makeVoucher())).toBe('unpaid');
+  });
+
+  it('returns the stored status when set', () => {
+    expect(voucherPaymentStatus(makeVoucher({ paymentStatus: 'paid' }))).toBe('paid');
+    expect(voucherPaymentStatus(makeVoucher({ paymentStatus: 'unpaid' }))).toBe('unpaid');
   });
 });

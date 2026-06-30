@@ -13,6 +13,7 @@ export {
   type Voucher,
   renderVoucherNumber,
   voucherTotal,
+  voucherPaymentStatus,
 } from './voucher.js';
 
 export {

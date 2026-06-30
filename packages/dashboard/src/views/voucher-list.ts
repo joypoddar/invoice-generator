@@ -1,10 +1,10 @@
 import { formatCurrency } from '@invoice/renderer';
-import { voucherTotal, type Voucher } from '@invoice/shared';
+import { voucherPaymentStatus, voucherTotal, type Voucher } from '@invoice/shared';
 
 export function renderVoucherListPage(vouchers: Voucher[]): string {
   const rows =
     vouchers.length === 0
-      ? `<tr><td colspan="4" style="padding:32px; text-align:center; color:#888;">
+      ? `<tr><td colspan="5" style="padding:32px; text-align:center; color:#888;">
            No vouchers yet. Create one with <code>invoice voucher new</code>.
          </td></tr>`
       : vouchers.map(renderRow).join('');
@@ -35,6 +35,9 @@ export function renderVoucherListPage(vouchers: Voucher[]): string {
     a.row-link { color:#3949ab; text-decoration:none; font-weight:600; }
     a.row-link:hover { text-decoration:underline; }
     .num { font-variant-numeric:tabular-nums; }
+    .badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
+    .badge-paid { background:#dcfce7; color:#15803d; }
+    .badge-unpaid { background:#fef3c7; color:#92400e; }
   </style>
 </head>
 <body>
@@ -49,6 +52,7 @@ export function renderVoucherListPage(vouchers: Voucher[]): string {
           <th>PV No.</th>
           <th>Pay To</th>
           <th>Date</th>
+          <th>Status</th>
           <th style="text-align:right;">Total</th>
         </tr>
       </thead>
@@ -63,10 +67,16 @@ export function renderVoucherListPage(vouchers: Voucher[]): string {
 
 function renderRow(v: Voucher): string {
   const total = formatCurrency(voucherTotal(v), v.currency || 'INR');
+  const status = voucherPaymentStatus(v);
+  const paidBadge =
+    status === 'paid'
+      ? `<span class="badge badge-paid">paid</span>`
+      : `<span class="badge badge-unpaid">unpaid</span>`;
   return `<tr>
     <td><a class="row-link" href="/vouchers/${escapeAttr(v.id)}">${escapeHtml(v.voucherNumber)}</a></td>
     <td>${escapeHtml(v.payTo)}</td>
     <td class="num">${escapeHtml(v.date)}</td>
+    <td>${paidBadge}</td>
     <td class="num" style="text-align:right;">${escapeHtml(total)}</td>
   </tr>`;
 }

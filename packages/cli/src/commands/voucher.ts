@@ -5,6 +5,7 @@ import open from 'open';
 import {
   renderVoucherNumber,
   voucherTotal,
+  voucherPaymentStatus,
   type Config,
   type Voucher,
   type VoucherLine,
@@ -69,6 +70,11 @@ export function register(program: Command): void {
     .action(runNew);
 
   voucher.command('list').description('List saved payment vouchers').action(runList);
+
+  voucher
+    .command('mark <id> <status>')
+    .description('Mark a voucher payout as paid or unpaid')
+    .action(runVoucherMark);
 
   voucher
     .command('send [id]')
@@ -275,6 +281,8 @@ async function runNew(opts: NewOptions): Promise<void> {
     receivedBy,
     ...(notes ? { notes } : {}),
     createdAt: new Date().toISOString(),
+    status: 'draft',
+    paymentStatus: 'unpaid',
   };
 
   const store = new SqliteStore(dbPath());
@@ -315,8 +323,9 @@ async function runSend(id: string | undefined, opts: VoucherSendOptions): Promis
   }
 
   const store = new SqliteStore(dbPath());
-  let voucher: Voucher;
+  let status: VoucherSendStatus;
   try {
+    let voucher: Voucher;
     if (opts.last) {
       const all = store.listVouchers();
       if (all.length === 0) {
@@ -332,11 +341,11 @@ async function runSend(id: string | undefined, opts: VoucherSendOptions): Promis
       }
       voucher = match;
     }
+    status = await performVoucherSend(config, store, voucher, opts);
   } finally {
     store.close();
   }
 
-  const status = await performVoucherSend(config, voucher, opts);
   if (status === 'error') process.exit(1);
 }
 
@@ -353,6 +362,7 @@ export type VoucherSendStatus = 'sent' | 'aborted' | 'error';
 
 async function performVoucherSend(
   config: Config,
+  store: SqliteStore,
   voucher: Voucher,
   opts: VoucherSendOptions,
 ): Promise<VoucherSendStatus> {
@@ -405,6 +415,8 @@ async function performVoucherSend(
     },
   );
 
+  store.upsertVoucher(markVoucherSent(voucher, recipients));
+
   console.log(`Sent. ${voucher.voucherNumber} → ${recipients.to.join(', ')}`);
   return 'sent';
 }
@@ -441,7 +453,10 @@ async function runList(): Promise<void> {
   }
   for (const v of vouchers) {
     const total = formatCurrency(voucherTotal(v), v.currency || 'INR');
-    console.log(`${v.voucherNumber}\t${v.date}\t${v.payTo}\t${total}\t${v.id.slice(0, 8)}`);
+    const status = voucherPaymentStatus(v);
+    console.log(
+      `${v.voucherNumber}\t${v.date}\t${v.payTo}\t${total}\t${status}\t${v.id.slice(0, 8)}`,
+    );
   }
 }
 
@@ -508,6 +523,66 @@ async function runPrint(id: string | undefined, opts: PrintOptions): Promise<voi
       void server.stop().then(() => resolve());
     });
   });
+}
+
+const VALID_PAYMENT_STATUSES = ['paid', 'unpaid'] as const;
+type VoucherPaymentStatus = (typeof VALID_PAYMENT_STATUSES)[number];
+
+function isVoucherPaymentStatus(s: string): s is VoucherPaymentStatus {
+  return (VALID_PAYMENT_STATUSES as readonly string[]).includes(s);
+}
+
+/** Pure transform: apply a paid/unpaid mark, stamping paidAt only when paid. */
+export function markVoucher(
+  voucher: Voucher,
+  status: VoucherPaymentStatus,
+  now: string = new Date().toISOString(),
+): Voucher {
+  return {
+    ...voucher,
+    paymentStatus: status,
+    paidAt: status === 'paid' ? now : undefined,
+  };
+}
+
+/** Pure transform: record the send (status, timestamp, recipients snapshot). */
+export function markVoucherSent(
+  voucher: Voucher,
+  recipients: Recipients,
+  now: string = new Date().toISOString(),
+): Voucher {
+  return {
+    ...voucher,
+    status: 'sent',
+    sentAt: now,
+    recipients,
+  };
+}
+
+async function runVoucherMark(id: string, status: string): Promise<void> {
+  if (!isVoucherPaymentStatus(status)) {
+    console.error(`Status must be 'paid' or 'unpaid', got: ${status}`);
+    process.exit(1);
+  }
+
+  const config = loadConfigSafe();
+  if (!config) {
+    console.error('Not configured. Run `invoice init` first.');
+    process.exit(1);
+  }
+
+  const store = new SqliteStore(dbPath());
+  try {
+    const voucher = resolveVoucher(store.listVouchers(), id);
+    if (!voucher) {
+      console.error(`No voucher matching "${id}".`);
+      process.exit(1);
+    }
+    store.upsertVoucher(markVoucher(voucher, status));
+    console.log(`Marked voucher ${voucher.voucherNumber} as ${status}.`);
+  } finally {
+    store.close();
+  }
 }
 
 /** Resolve by full UUID, ≥4-char id prefix, or exact voucher number. */
