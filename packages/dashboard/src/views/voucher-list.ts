@@ -1,32 +1,31 @@
-import { totalFor, type Invoice } from '@invoice/shared';
+import { formatCurrency } from '@invoice/renderer';
+import { voucherPaymentStatus, voucherTotal, type Voucher } from '@invoice/shared';
+import { BATCH_CAP } from './voucher-batch.js';
 
-const SHORT_ID_LEN = 8;
-const BATCH_CAP = 50;
-
-export function renderInvoiceListPage(invoices: Invoice[]): string {
+export function renderVoucherListPage(vouchers: Voucher[]): string {
   const rows =
-    invoices.length === 0
-      ? `<tr><td colspan="8" style="padding:32px; text-align:center; color:#888;">
-           No invoices yet. Create one with <code>invoice new</code>, then sync with <code>invoice sync</code>.
+    vouchers.length === 0
+      ? `<tr><td colspan="6" style="padding:32px; text-align:center; color:#888;">
+           No vouchers yet. Create one with <code>invoice voucher new</code>.
          </td></tr>`
-      : invoices.map(renderRow).join('');
+      : vouchers.map(renderRow).join('');
 
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Invoices</title>
+  <title>Vouchers</title>
   <style>
     body { margin:0; padding:0; background:#f4f6fb; font-family:'Segoe UI',Arial,sans-serif; color:#222; }
     .wrap { max-width:1080px; margin:0 auto; padding:0 24px 32px; }
-    h1 { margin:0 0 20px; font-size:24px; color:#3949ab; }
     .toolbar {
       position:sticky; top:0; z-index:10;
       background:#f4f6fb; padding:20px 0;
-      display:flex; gap:12px; align-items:center;
+      display:flex; gap:16px; align-items:center;
       border-bottom:1px solid #e5e7eb; margin-bottom:16px;
     }
+    h1 { margin:0; font-size:24px; color:#3949ab; flex:1; }
     .btn-print {
       background:#3949ab; color:#fff; border:none; padding:9px 18px;
       border-radius:6px; font-size:14px; font-weight:600; cursor:pointer;
@@ -47,29 +46,25 @@ export function renderInvoiceListPage(invoices: Invoice[]): string {
     .badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
     .badge-paid { background:#dcfce7; color:#15803d; }
     .badge-unpaid { background:#fef3c7; color:#92400e; }
-    .badge-draft { background:#e5e7eb; color:#374151; }
-    .badge-sent { background:#dbeafe; color:#1d4ed8; }
     @media print { .no-print { display:none !important; } }
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="toolbar no-print">
-      <h1 style="margin:0; flex:1;">Invoices</h1>
-      <span class="nav"><a href="/invoices" class="active">Invoices</a><a href="/vouchers">Vouchers</a></span>
+      <h1>Vouchers</h1>
+      <span class="nav"><a href="/invoices">Invoices</a><a href="/vouchers" class="active">Vouchers</a></span>
       <button id="print-selected" class="btn-print" disabled>🖨 Print selected</button>
     </div>
     <table>
       <thead>
         <tr>
           <th class="check"><input type="checkbox" id="select-all" aria-label="Select all" /></th>
-          <th>Id</th>
-          <th>Number</th>
-          <th>Customer</th>
-          <th>Due</th>
+          <th>PV No.</th>
+          <th>Pay To</th>
+          <th>Date</th>
           <th>Status</th>
           <th style="text-align:right;">Total</th>
-          <th>Paid?</th>
         </tr>
       </thead>
       <tbody>
@@ -79,11 +74,11 @@ export function renderInvoiceListPage(invoices: Invoice[]): string {
   </div>
   <script>
     (function () {
-      var checkboxes = document.querySelectorAll('input[name="invoice"]');
+      var checkboxes = document.querySelectorAll('input[name="voucher"]');
       var selectAll = document.getElementById('select-all');
       var button = document.getElementById('print-selected');
       function count() {
-        return document.querySelectorAll('input[name="invoice"]:checked').length;
+        return document.querySelectorAll('input[name="voucher"]:checked').length;
       }
       function update() {
         var n = count();
@@ -100,15 +95,15 @@ export function renderInvoiceListPage(invoices: Invoice[]): string {
       }
       checkboxes.forEach(function (cb) { cb.addEventListener('change', update); });
       button.addEventListener('click', function () {
-        var ids = Array.from(document.querySelectorAll('input[name="invoice"]:checked'))
+        var ids = Array.from(document.querySelectorAll('input[name="voucher"]:checked'))
           .map(function (cb) { return cb.value; });
         if (ids.length === 0) return;
         if (ids.length > ${BATCH_CAP}) {
-          var ok = confirm('You selected ' + ids.length + ' invoices. Only the first ${BATCH_CAP} will be printed. Continue?');
+          var ok = confirm('You selected ' + ids.length + ' vouchers. Only the first ${BATCH_CAP} will be printed. Continue?');
           if (!ok) return;
           ids = ids.slice(0, ${BATCH_CAP});
         }
-        window.location.href = '/invoices/print?ids=' + encodeURIComponent(ids.join(','));
+        window.location.href = '/vouchers/print?ids=' + encodeURIComponent(ids.join(','));
       });
       update();
     })();
@@ -117,32 +112,20 @@ export function renderInvoiceListPage(invoices: Invoice[]): string {
 </html>`;
 }
 
-function renderRow(inv: Invoice): string {
-  const def = inv.default;
-  const shortId = inv.id.slice(0, SHORT_ID_LEN);
-  const number = String(def.invoiceNumber ?? '');
-  const customer = String(def.customerName ?? '');
-  const due = String(def.dueDate ?? '');
-  const currency = String(def.currency ?? '');
-  const total = totalFor(inv).toFixed(2);
-  const statusBadge =
-    inv.status === 'sent'
-      ? `<span class="badge badge-sent">sent</span>`
-      : `<span class="badge badge-draft">draft</span>`;
+function renderRow(v: Voucher): string {
+  const total = formatCurrency(voucherTotal(v), v.currency || 'INR');
+  const status = voucherPaymentStatus(v);
   const paidBadge =
-    inv.paymentStatus === 'paid'
+    status === 'paid'
       ? `<span class="badge badge-paid">paid</span>`
       : `<span class="badge badge-unpaid">unpaid</span>`;
-
   return `<tr>
-    <td class="check"><input type="checkbox" name="invoice" value="${escapeAttr(inv.id)}" aria-label="Select invoice ${escapeAttr(number)}" /></td>
-    <td><a class="row-link" href="/invoices/${escapeAttr(inv.id)}">${escapeHtml(shortId)}</a></td>
-    <td>${escapeHtml(number)}</td>
-    <td>${escapeHtml(customer)}</td>
-    <td class="num">${escapeHtml(due)}</td>
-    <td>${statusBadge}</td>
-    <td class="num" style="text-align:right;">${escapeHtml(total)}${currency ? ' ' + escapeHtml(currency) : ''}</td>
+    <td class="check"><input type="checkbox" name="voucher" value="${escapeAttr(v.id)}" aria-label="Select voucher ${escapeAttr(v.voucherNumber)}" /></td>
+    <td><a class="row-link" href="/vouchers/${escapeAttr(v.id)}">${escapeHtml(v.voucherNumber)}</a></td>
+    <td>${escapeHtml(v.payTo)}</td>
+    <td class="num">${escapeHtml(v.date)}</td>
     <td>${paidBadge}</td>
+    <td class="num" style="text-align:right;">${escapeHtml(total)}</td>
   </tr>`;
 }
 

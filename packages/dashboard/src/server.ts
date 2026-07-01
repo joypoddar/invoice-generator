@@ -2,9 +2,13 @@ import { serve, type ServerType } from '@hono/node-server';
 import { Hono } from 'hono';
 import { SqliteStore } from '@invoice/core';
 import type { Invoice } from '@invoice/shared';
+import type { Voucher } from '@invoice/shared';
 import { renderInvoiceDetailPage } from './views/invoice-detail.js';
 import { renderInvoiceListPage } from './views/invoice-list.js';
 import { BATCH_CAP, renderInvoiceBatchPage } from './views/invoice-batch.js';
+import { renderVoucherDetailPage } from './views/voucher-detail.js';
+import { renderVoucherListPage } from './views/voucher-list.js';
+import { renderVoucherBatchPage } from './views/voucher-batch.js';
 
 export interface StartServerResult {
   /** Stop the server. Returns when the underlying socket is closed. */
@@ -102,6 +106,64 @@ export function startServer(opts: StartServerOptions): StartServerResult {
     return c.html(renderInvoiceDetailPage(invoice, opts.renderOpts));
   });
 
+  app.get('/vouchers', async (c) => {
+    const store = new SqliteStore(opts.dbPath);
+    let vouchers: Voucher[];
+    try {
+      vouchers = store.listVouchers();
+    } finally {
+      store.close();
+    }
+    return c.html(renderVoucherListPage(vouchers));
+  });
+
+  // Registered BEFORE `/vouchers/:id` so Hono matches `/vouchers/print` first.
+  app.get('/vouchers/print', async (c) => {
+    const idsParam = c.req.query('ids') ?? '';
+    const requested = idsParam
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (requested.length === 0) {
+      return c.html(noSelectionPage(), 404);
+    }
+    const capped = requested.slice(0, BATCH_CAP);
+    const store = new SqliteStore(opts.dbPath);
+    const vouchers: Voucher[] = [];
+    try {
+      for (const id of capped) {
+        const v = store.getVoucher(id);
+        if (v) vouchers.push(v);
+      }
+    } finally {
+      store.close();
+    }
+    if (vouchers.length === 0) {
+      return c.html(noSelectionPage(), 404);
+    }
+    return c.html(
+      renderVoucherBatchPage(vouchers, {
+        localUserName: opts.localUserName ?? '',
+        renderOpts: opts.renderOpts,
+      }),
+    );
+  });
+
+  app.get('/vouchers/:id', async (c) => {
+    const id = c.req.param('id');
+    const store = new SqliteStore(opts.dbPath);
+    let voucher: Voucher | null;
+    try {
+      voucher = store.getVoucher(id);
+    } finally {
+      store.close();
+    }
+    if (!voucher) {
+      return c.html(notFoundPage(id, 'voucher'), 404);
+    }
+    return c.html(renderVoucherDetailPage(voucher, opts.renderOpts));
+  });
+
   const server: ServerType = serve({
     fetch: app.fetch,
     port: opts.port,
@@ -116,12 +178,14 @@ export function startServer(opts: StartServerOptions): StartServerResult {
   };
 }
 
-function notFoundPage(id: string): string {
+function notFoundPage(id: string, kind: 'invoice' | 'voucher' = 'invoice'): string {
+  const listPath = kind === 'voucher' ? '/vouchers' : '/invoices';
+  const listLabel = kind === 'voucher' ? '← All vouchers' : '← All invoices';
   return `<!doctype html><html><head><meta charset="utf-8"><title>Not found</title></head>
 <body style="font-family:sans-serif; padding:48px; color:#333;">
-<h1>Invoice not found</h1>
-<p>No invoice in the local DB with id <code>${escapeHtml(id)}</code>.</p>
-<p><a href="/invoices">← All invoices</a></p>
+<h1>${kind === 'voucher' ? 'Voucher' : 'Invoice'} not found</h1>
+<p>No ${kind} in the local DB with id <code>${escapeHtml(id)}</code>.</p>
+<p><a href="${listPath}">${listLabel}</a></p>
 </body></html>`;
 }
 

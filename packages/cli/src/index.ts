@@ -16,6 +16,7 @@ import * as lastCmd from './commands/last.js';
 import * as resendCmd from './commands/resend.js';
 import * as searchCmd from './commands/search.js';
 import * as dashboardCmd from './commands/dashboard.js';
+import * as voucherCmd from './commands/voucher.js';
 
 const program = new Command();
 
@@ -38,6 +39,7 @@ lastCmd.register(program);
 resendCmd.register(program);
 searchCmd.register(program);
 dashboardCmd.register(program);
+voucherCmd.register(program);
 
 await program.parseAsync().catch((err: unknown) => {
   console.error(err instanceof Error ? err.message : err);

@@ -555,6 +555,53 @@ The CLI commands, query layer, CSV export, dashboard, and ingestion don't change
 
 `invoice chat` REPL with tool-calling against `InvoiceStore`. `LlmProvider` interface (parallel to `InvoiceStore`); Ollama and OpenAI-compatible servers as initial impls. Tools map directly to existing `core/queries.ts` methods — no new business logic. With `llm.provider = ollama`, no data leaves the machine.
 
+### Payment Voucher track (parallel, out-of-band)
+
+Vouchers are a *paid-out* document, deliberately a separate type/table/namespace (see CLAUDE.md "Payment Voucher deviations"). This track brings them toward the same surface invoices already have. The timeline is **relative** — ordered by value and dependency, not calendar dates — with rough effort sizes (S ≈ a sitting, M ≈ a day, L ≈ multi-day). Each phase mirrors the invoice phase named in parentheses.
+
+**Design note — voucher email sync (reversed):** an earlier revision listed voucher `sync` / IMAP
+ingestion as a hard non-goal. That was overturned: vouchers now send with an `X-Voucher-Generator`
+header + `voucher-<n>.json` sidecar and are pulled back via `voucher sync`, mirroring invoices. Voucher
+sync keeps its **own** watermark (`voucher_sync_state`) so it never clobbers the invoice watermark even
+though both read `config.imap.folder` (the two streams are distinguished by their headers). The only
+still-universal non-goals remain: no daemon, no background polling — sync is always user-initiated.
+
+#### PV-1 — Persistence + send + status tracking (mirrors Phase 1 + 3.5) — **DONE / in progress on `issue-01/payment-voucher`** · S–M
+- **Done & shipped**: `Voucher`/`VoucherLine` type, `vouchers` SQLite table + `upsert/get/list/delete` on `SqliteStore`, `voucher new` (draft persistence, payee picker, global + per-customer `nextSeq`), `voucher list`, `voucher print` (dashboard), renderer (logo banner, amount-in-words, print CSS), `config.voucher` block.
+- **On this branch**: `voucher send` (`buildVoucherMailOptions`/`sendVoucher`, recipient composition, sidecar JSON), and **status tracking** — `paymentStatus` + `voucher mark <id> paid|unpaid`, send-state persistence (`status`/`sentAt`/`recipients` written back on send), paid/unpaid column in `voucher list` and the dashboard list.
+
+#### PV-1.5 — Clone, resend, sync, dashboard batch print (on `issue-01/payment-voucher`) — **DONE**
+- `voucher clone <id>` (fresh id/number/date via `prepareVoucherClone`; counter bump mirrors `voucher new`; `--send` chaining) and `voucher resend <id>` (already-sent guard → drafts a clone → `performVoucherSend`).
+- `voucher sync [--backfill]` — full email parity: `X-Voucher-Generator` header + `voucher-<n>.json` sidecar (`buildVoucherMailOptions`), `parseVoucherSidecar`/`ingestVouchers` in `core/ingest.ts`, parameterized `fetchSince`, and the independent `voucher_sync_state` watermark on `SqliteStore`.
+- Dashboard multi-select + "Print selected" on `/vouchers` → `GET /vouchers/print?ids=` → `renderVoucherBatchPage` (reuses `renderVoucherCard`, `PRINT_CSS + VOUCHER_PRINT_EXTRA`, `BATCH_CAP`).
+
+#### PV-2 — Remaining productivity parity (mirrors Phase 2 + Phase 4.7 shortcuts) · **next** · M
+- `voucher search <text>`, `voucher last [--unsent]` (`voucher send --last` already present).
+- `voucher list` filter flags: `--paid / --unpaid / --since / --payee`.
+- `voucher export csv [--paid] --out <file>`.
+- Promote the inline `renderVoucherSubject` (5 placeholders) into a shared helper mirroring `renderSubject` (sender/date placeholders), so subject templating matches invoices.
+
+#### PV-3 — Document richness parity (mirrors Phase 4 + 4.5 rendering) · after PV-2 · M–L
+- Optional **tax** on vouchers: per-line `taxRate` + totals block (reuse the invoice renderer's IGST logic), `config.voucher.defaultTaxRate`/`taxLabel`.
+- **Bank-details** block, **payment-instructions** block, **signature image** (reuse `branding.signatureUrl` + `resolveImageSrc`, already shared).
+- `config.voucher.defaultNotes`; optional `custom` fields dict on `Voucher` for extensibility.
+- *Decide explicitly whether voucher lines stay `{paymentMethod, description, amount}` or gain `quantity/unitPrice` — only add if a real payout needs it.*
+
+#### PV-4 — Templates & recurring (mirrors Phase 4 recurring) · after PV-3 · L
+- `voucher template save/list/use/delete` (reuse `core/recurring.ts` pure transforms where shapes allow).
+- `voucher recurring create/list/show/delete/generate` + `schedule-help` (recurring storage on `SqliteStore`, same precedent as invoice recurring).
+- Per-customer voucher `numberFormat` override (vouchers currently honor a customer's `nextSeq` but not a custom format).
+
+#### PV-5 — Remaining dashboard parity (mirrors Phase 5 slice 1.5 + Phase 6) · parallel with invoice dashboard slices · M
+- ✅ Multi-select + "Print selected" batch print on `/vouchers` — **done in PV-1.5**.
+- Paid-toggle widget on the voucher detail page (`PATCH /vouchers/:id/status`).
+- Voucher analytics + CSV export endpoint once invoice Phase 6 lands.
+
+#### PV-6 — Git-backed storage inclusion (rides Phase 7) · when Phase 7 lands · S (within Phase 7)
+- ⚠️ Phase 7's snapshot/commit hook currently describes `data/invoices/<uuid>.json` only. **Vouchers must be added to the same commit pipeline** (`data/vouchers/<uuid>.json`) or they will be silently omitted from git history. No separate phase — fold into the Phase 7 work.
+
+**Suggested order:** ~~PV-1.5~~ (done) → PV-2 → PV-3 → PV-5 (remaining dashboard, can overlap) → PV-4 → PV-6 (whenever Phase 7 happens).
+
 ### Cross-cutting (do as you go)
 
 - **TypeScript strict** from day one.

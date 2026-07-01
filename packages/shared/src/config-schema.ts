@@ -20,6 +20,15 @@ export const ConfigSchema = z.object({
     })
     .default({}),
 
+  voucher: z
+    .object({
+      numberFormat: z.string().default('{INITIALS}_{MMM}{YY}_{SEQ}'),
+      nextSeq: z.number().int().nonnegative().default(1),
+      title: z.string().default('Employee Payment Voucher'),
+      defaultPaymentMethod: z.string().optional(),
+    })
+    .default({}),
+
   company: z
     .object({
       name: z.string().optional(),

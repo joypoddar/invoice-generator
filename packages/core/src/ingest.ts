@@ -1,10 +1,23 @@
 import { simpleParser } from 'mailparser';
-import { INVOICE_HEADER_NAME, type Invoice } from '@invoice/shared';
+import {
+  INVOICE_HEADER_NAME,
+  VOUCHER_HEADER_NAME,
+  VOUCHER_HEADER_VALUE,
+  type Invoice,
+  type Voucher,
+} from '@invoice/shared';
 import { fetchSince, type FetchedMessage } from './imap.js';
 import type { InvoiceStore } from './store.js';
 import type { ImapFlow } from 'imapflow';
 
 const SIDECAR_FILENAME_RE = /^invoice-.+\.json$/i;
+const VOUCHER_SIDECAR_FILENAME_RE = /^voucher-.+\.json$/i;
+
+/** Minimal store surface needed to ingest vouchers (lives on SqliteStore). */
+export interface VoucherIngestStore {
+  getVoucher(id: string): Voucher | null;
+  upsertVoucher(voucher: Voucher): void;
+}
 
 export interface IngestResult {
   /** Number of messages fetched + parsed (includes re-upserts on --backfill). */
@@ -59,6 +72,62 @@ export async function parseSidecar(msg: FetchedMessage): Promise<Invoice | null>
 
   try {
     return JSON.parse(sidecar.content.toString('utf8')) as Invoice;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Pull sent vouchers back from an IMAP folder into the store. Mirrors `ingest`
+ * but filters on the voucher header and dedupes by voucher UUID (vouchers carry
+ * no `message_uid` column — re-syncing simply updates the row in place).
+ */
+export async function ingestVouchers(
+  store: VoucherIngestStore,
+  client: ImapFlow,
+  folder: string,
+  lastUid: number,
+): Promise<IngestResult> {
+  let fetchedCount = 0;
+  let newCount = 0;
+  let newLastUid = lastUid;
+
+  for await (const msg of fetchSince(
+    client,
+    folder,
+    lastUid,
+    VOUCHER_HEADER_NAME,
+    VOUCHER_HEADER_VALUE,
+  )) {
+    const voucher = await parseVoucherSidecar(msg);
+    if (!voucher) continue;
+    const existing = store.getVoucher(voucher.id);
+    store.upsertVoucher(voucher);
+    fetchedCount++;
+    if (!existing) newCount++;
+    if (msg.uid > newLastUid) newLastUid = msg.uid;
+  }
+
+  return { fetchedCount, newCount, newLastUid };
+}
+
+/**
+ * Parse an IMAP message, looking for the `voucher-*.json` sidecar attachment.
+ * Returns null if the voucher header or sidecar is absent or the JSON doesn't decode.
+ */
+export async function parseVoucherSidecar(msg: FetchedMessage): Promise<Voucher | null> {
+  const parsed = await simpleParser(msg.source);
+
+  const header = parsed.headers.get(VOUCHER_HEADER_NAME.toLowerCase());
+  if (!header) return null;
+
+  const sidecar = parsed.attachments.find((a) =>
+    VOUCHER_SIDECAR_FILENAME_RE.test(a.filename ?? ''),
+  );
+  if (!sidecar) return null;
+
+  try {
+    return JSON.parse(sidecar.content.toString('utf8')) as Voucher;
   } catch {
     return null;
   }

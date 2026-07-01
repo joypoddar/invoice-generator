@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { INVOICE_HEADER_NAME, type Invoice } from '@invoice/shared';
-import { buildMailOptions, type Recipients } from './email.js';
+import { INVOICE_HEADER_NAME, type Invoice, type Voucher } from '@invoice/shared';
+import { buildMailOptions, buildVoucherMailOptions, type Recipients } from './email.js';
 
 function makeInvoice(overrides: Partial<Invoice> = {}): Invoice {
   return {
@@ -24,6 +24,22 @@ function makeInvoice(overrides: Partial<Invoice> = {}): Invoice {
     custom: {},
     status: 'draft',
     paymentStatus: 'unpaid',
+    ...overrides,
+  };
+}
+
+function makeVoucher(overrides: Partial<Voucher> = {}): Voucher {
+  return {
+    id: randomUUID(),
+    voucherNumber: 'JP_May26_02',
+    title: 'Employee Payment Voucher',
+    payTo: 'Acme Corp',
+    date: '2026-05-17',
+    currency: 'USD',
+    lines: [{ paymentMethod: 'Bank transfer', description: 'Reimbursement', amount: 420 }],
+    preparedBy: 'Joy',
+    receivedBy: 'Joy',
+    createdAt: new Date().toISOString(),
     ...overrides,
   };
 }
@@ -99,5 +115,21 @@ describe('buildMailOptions', () => {
   it('uses the given from address', () => {
     const opts = buildMailOptions(makeInvoice(), recipients, 'someone@else.com');
     expect(opts.from).toBe('someone@else.com');
+  });
+
+  it('builds voucher-specific subject and filename', () => {
+    const voucher = makeVoucher();
+    const opts = buildVoucherMailOptions(voucher, recipients, 'someone@else.com');
+    expect(opts.subject).toBe('Payment Voucher JP_May26_02 for Acme Corp');
+    expect(opts.attachments?.[0]?.filename).toBe('voucher-JP_May26_02.json');
+    expect(opts.html).toContain('Employee Payment Voucher');
+  });
+
+  it('applies subjectTemplate for vouchers', () => {
+    const voucher = makeVoucher();
+    const opts = buildVoucherMailOptions(voucher, recipients, 'someone@else.com', {
+      subjectTemplate: 'PV {voucherNumber} to {payTo}',
+    });
+    expect(opts.subject).toBe('PV JP_May26_02 to Acme Corp');
   });
 });

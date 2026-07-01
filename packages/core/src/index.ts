@@ -20,7 +20,14 @@ export {
   type FetchedMessage,
 } from './imap.js';
 
-export { ingest, parseSidecar, type IngestResult } from './ingest.js';
+export {
+  ingest,
+  ingestVouchers,
+  parseSidecar,
+  parseVoucherSidecar,
+  type IngestResult,
+  type VoucherIngestStore,
+} from './ingest.js';
 
 export {
   FREQUENCIES,
